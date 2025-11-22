@@ -1,0 +1,19 @@
+# Core dependencies
+torch>=1.12.0
+torchvision>=0.13.0
+numpy>=1.21.0
+opencv-python>=4.5.0
+Pillow>=8.0.0
+
+# Data loading
+pyyaml>=5.4.1
+
+# Optional: for COCO evaluation (if needed)
+# pycocotools>=2.0.4
+
+# Optional: for Waymo dataset (if needed)
+# tensorflow>=2.8.0  # for TFRecord reading
+
+# Optional: for nuScenes dataset (if needed)
+# nuscenes-devkit>=1.1.0
+
