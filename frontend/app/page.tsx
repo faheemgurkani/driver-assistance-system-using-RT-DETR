@@ -13,6 +13,7 @@ import {
   Terminal,
   Activity,
   ArrowRight,
+  ChevronDown,
 } from "lucide-react";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
@@ -41,6 +42,9 @@ export default function Home() {
   const [logs, setLogs] = useState<string[]>([]);
   const [readmeContent, setReadmeContent] = useState<string>("");
   const [readmeLoading, setReadmeLoading] = useState<boolean>(true);
+  const [pipelineType, setPipelineType] = useState<"original" | "saliency">(
+    "original"
+  );
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const statusIntervalRef = useRef<NodeJS.Timeout | null>(null);
@@ -130,11 +134,16 @@ export default function Home() {
 
     setViewState("uploading");
     setStatusMessage("Uploading video to processing unit...");
-    addLog("Initiating upload sequence...");
+    addLog(
+      `Initiating upload sequence... (Pipeline: ${
+        pipelineType === "original" ? "Original D2-City" : "Saliency-Enhanced"
+      })`
+    );
 
     const formData = new FormData();
     formData.append("file", file);
     formData.append("conf_threshold", "0.5");
+    formData.append("pipeline_type", pipelineType);
 
     try {
       const response = await axios.post(`${API_URL}/upload`, formData, {
@@ -282,7 +291,39 @@ export default function Home() {
             <>
               {/* STATE: IDLE / FILE SELECTION */}
               {viewState === "idle" && (
-                <div className="flex flex-col items-center animate-in fade-in duration-700">
+                <div className="flex flex-col items-center animate-in fade-in duration-700 gap-6">
+                  {/* Pipeline Type Selector */}
+                  <div className="w-full max-w-2xl">
+                    <label className="block text-sm font-medium text-neutral-400 mb-2">
+                      Pipeline Type
+                    </label>
+                    <div className="relative">
+                      <select
+                        value={pipelineType}
+                        onChange={(e) =>
+                          setPipelineType(
+                            e.target.value as "original" | "saliency"
+                          )
+                        }
+                        className="w-full bg-neutral-900 border border-white/10 text-white px-4 py-3 rounded-sm appearance-none cursor-pointer hover:border-white/20 transition-colors focus:outline-none focus:border-white/40"
+                        aria-label="Select pipeline type"
+                      >
+                        <option value="original">
+                          Original D2-City (with preprocessing)
+                        </option>
+                        <option value="saliency">
+                          Saliency-Enhanced (pre-processed frames)
+                        </option>
+                      </select>
+                      <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-neutral-400 pointer-events-none" />
+                    </div>
+                    <p className="text-xs text-neutral-500 mt-2">
+                      {pipelineType === "original"
+                        ? "Uses original D2-City dataset with data loading and preprocessing"
+                        : "Uses pre-processed saliency-enhanced frames (no preprocessing needed)"}
+                    </p>
+                  </div>
+
                   <div
                     onClick={() => fileInputRef.current?.click()}
                     onDragOver={onDragOver}

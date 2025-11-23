@@ -16,10 +16,12 @@ sys.path.insert(0, str(backend_path))
 # Register custom datasets
 try:
     sys.path.insert(0, str(backend_path / "src" / "datasets"))
-    from register_rtdetr import D2CityDatasetRTDETR
-    print("✓ Registered D2-City dataset with RT-DETR")
+    from register_rtdetr import D2CityDatasetRTDETR, SaliencyEnhancedD2CityDatasetRTDETR
+    print("✓ Registered D2-City datasets with RT-DETR")
+    print("  - D2CityDatasetRTDETR (original videos with preprocessing)")
+    print("  - SaliencyEnhancedD2CityDatasetRTDETR (pre-processed enhanced frames)")
 except Exception as e:
-    print(f"Warning: Could not register dataset: {e}")
+    print(f"Warning: Could not register datasets: {e}")
 
 # Import RT-DETR modules from local copy
 import src.rtdetr.misc.dist as dist 
@@ -44,7 +46,15 @@ def main(args) -> None:
 
     # Load RT-DETR config
     # This establishes the model architecture from YAML config
-    config_path = args.config or str(backend_path / "configs" / "d2city_rtdetr.yml")
+    # Supports both scenarios:
+    # - Original D2-City: d2city_rtdetr.yml (data loading + preprocessing)
+    # - Saliency-Enhanced: d2city_saliency_enhanced_rtdetr.yml (data loading only)
+    if args.config:
+        config_path = args.config
+    elif args.saliency_enhanced:
+        config_path = str(backend_path / "configs" / "d2city_saliency_enhanced_rtdetr.yml")
+    else:
+        config_path = str(backend_path / "configs" / "d2city_rtdetr.yml")
     
     if not os.path.exists(config_path):
         raise FileNotFoundError(f"Config file not found: {config_path}")
@@ -94,7 +104,12 @@ if __name__ == '__main__':
     
     parser.add_argument(
         '--config', '-c', type=str, default=None,
-        help='Path to RT-DETR config YAML file (default: configs/d2city_rtdetr.yml)'
+        help='Path to RT-DETR config YAML file. '
+             'Defaults: d2city_rtdetr.yml (original) or d2city_saliency_enhanced_rtdetr.yml (if --saliency-enhanced)'
+    )
+    parser.add_argument(
+        '--saliency-enhanced', action='store_true', default=False,
+        help='Use saliency-enhanced D2-City dataset (pre-processed frames, no preprocessing needed)'
     )
     parser.add_argument(
         '--resume', '-r', type=str, default=None,

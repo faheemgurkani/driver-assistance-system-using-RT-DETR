@@ -2,6 +2,9 @@
 Video Processing Script
 Processes video files and outputs videos with bounding boxes, class names
 Also saves predictions as txt/json files
+
+This script is used by the FastAPI backend for processing videos uploaded through the frontend.
+It handles frame extraction, inference, and video reconstruction with bounding boxes.
 """
 
 import os
@@ -16,7 +19,7 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 from pathlib import Path
 import json
-from typing import List, Dict
+from typing import List, Dict, Optional
 
 # Add backend to path
 backend_path = Path(__file__).parent.parent
@@ -48,18 +51,18 @@ def draw_detections(image: Image.Image, results: Dict, conf_threshold: float = 0
     try:
         font_size = max(20, int(image.size[0] / 30))
         try:
-            font = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", font_size)
+            font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", font_size)
         except:
             try:
-                font = ImageFont.truetype("/Library/Fonts/Arial.ttf", font_size)
+                font = ImageFont.truetype("arial.ttf", font_size)
             except:
                 font = ImageFont.load_default()
     except:
         font = ImageFont.load_default()
     
-    for bbox, label, score, centroid, class_name in zip(
-        results['bboxes'], results['labels'], results['scores'],
-        results['centroids'], results['class_names']
+    # Draw bounding boxes and labels
+    for bbox, label, score, class_name in zip(
+        results['bboxes'], results['labels'], results['scores'], results['class_names']
     ):
         if score < conf_threshold:
             continue
@@ -67,54 +70,55 @@ def draw_detections(image: Image.Image, results: Dict, conf_threshold: float = 0
         x1, y1, x2, y2 = bbox
         
         # Draw bounding box
-        draw.rectangle([x1, y1, x2, y2], outline='blue', width=4)
+        draw.rectangle([x1, y1, x2, y2], outline="red", width=3)
         
-        # Prepare text
-        text = f"{class_name} {score:.2f}"
+        # Draw label with background
+        label_text = f"{class_name}: {score:.2f}"
+        bbox_text = draw.textbbox((0, 0), label_text, font=font)
+        text_width = bbox_text[2] - bbox_text[0]
+        text_height = bbox_text[3] - bbox_text[1]
         
-        # Get text bounding box
-        try:
-            bbox_text = draw.textbbox((x1, y1), text, font=font)
-            text_width = bbox_text[2] - bbox_text[0]
-            text_height = bbox_text[3] - bbox_text[1]
-        except AttributeError:
-            text_width = len(text) * 8
-            text_height = 20
-            bbox_text = [x1, y1, x1 + text_width, y1 + text_height]
-        
-        # Draw text background
-        padding = 4
+        # Background rectangle for text
         draw.rectangle(
-            [x1 - padding, y1 - padding, x1 + text_width + padding, y1 + text_height + padding],
-            fill='white',
-            outline='blue',
-            width=2
+            [x1, y1 - text_height - 4, x1 + text_width + 4, y1],
+            fill="red",
+            outline="red"
         )
         
-        # Draw text
-        draw.text((x1, y1), text, font=font, fill='blue')
+        # Text
+        draw.text((x1 + 2, y1 - text_height - 2), label_text, fill="white", font=font)
     
     return image
 
 
-def process_video(model: nn.Module, video_path: str, output_path: str,
-                device: str = 'cuda', conf_threshold: float = 0.5,
-                save_predictions: bool = True, output_format: str = 'both'):
+def process_video(
+    model: nn.Module,
+    video_path: str,
+    output_path: str,
+    device: str = 'cuda',
+    conf_threshold: float = 0.5,
+    save_predictions: bool = True,
+    output_format: str = 'json'
+) -> Dict:
     """
-    Process video and save output with bounding boxes.
+    Process a video file: extract frames, run inference, draw bounding boxes, save video.
     
     Args:
-        model: RT-DETR model
+        model: RT-DETR model (already loaded)
         video_path: Path to input video
         output_path: Path to save output video
         device: Device to run inference on
         conf_threshold: Confidence threshold
-        save_predictions: Whether to save predictions as txt/json
-        output_format: 'json', 'txt', or 'both'
+        save_predictions: Whether to save predictions to file
+        output_format: Format for predictions ('json' or 'txt')
+    
+    Returns:
+        Dictionary with processing statistics
     """
+    # Open video
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
-        raise ValueError(f"Failed to open video: {video_path}")
+        raise ValueError(f"Could not open video: {video_path}")
     
     # Get video properties
     fps = int(cap.get(cv2.CAP_PROP_FPS))
@@ -122,18 +126,15 @@ def process_video(model: nn.Module, video_path: str, output_path: str,
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     
-    print(f"Processing video: {video_path}")
-    print(f"  Resolution: {width}x{height}")
-    print(f"  FPS: {fps}")
-    print(f"  Total frames: {total_frames}")
-    
     # Create video writer
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
     out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
     
-    # Store all predictions
-    all_predictions = []
-    frame_count = 0
+    frame_predictions = []
+    frame_idx = 0
+    
+    print(f"Processing video: {video_path}")
+    print(f"Total frames: {total_frames}, FPS: {fps}, Resolution: {width}x{height}")
     
     while True:
         ret, frame = cap.read()
@@ -144,7 +145,7 @@ def process_video(model: nn.Module, video_path: str, output_path: str,
         frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         frame_pil = Image.fromarray(frame_rgb)
         
-        # Run detection
+        # Run inference
         results = detect_frame(model, frame_pil, device, conf_threshold)
         
         # Draw detections
@@ -155,75 +156,61 @@ def process_video(model: nn.Module, video_path: str, output_path: str,
         annotated_bgr = cv2.cvtColor(annotated_array, cv2.COLOR_RGB2BGR)
         out.write(annotated_bgr)
         
-        # Store predictions
-        all_predictions.append({
-            'frame_number': frame_count,
-            'num_detections': results['num_detections'],
-            'detections': []
-        })
-        
-        for bbox, label, score, centroid, class_name in zip(
-            results['bboxes'], results['labels'], results['scores'],
-            results['centroids'], results['class_names']
-        ):
-            all_predictions[-1]['detections'].append({
-                'bbox': bbox,
-                'label': int(label),
-                'class_name': class_name,
-                'score': float(score),
-                'centroid': centroid
+        # Save predictions
+        if save_predictions:
+            frame_predictions.append({
+                'frame': frame_idx,
+                'num_detections': results['num_detections'],
+                'detections': [
+                    {
+                        'bbox': bbox,
+                        'label': int(label),
+                        'class_name': class_name,
+                        'score': float(score),
+                        'centroid': centroid
+                    }
+                    for bbox, label, score, centroid, class_name in zip(
+                        results['bboxes'], results['labels'], results['scores'],
+                        results['centroids'], results['class_names']
+                    )
+                ]
             })
         
-        frame_count += 1
-        
-        if frame_count % 30 == 0:
-            print(f"Processed {frame_count}/{total_frames} frames...")
+        frame_idx += 1
+        if frame_idx % 10 == 0:
+            print(f"Processed {frame_idx}/{total_frames} frames")
     
     cap.release()
     out.release()
     
-    print(f"✓ Saved output video to: {output_path}")
-    
-    # Save predictions
-    if save_predictions:
-        base_path = Path(output_path).stem
-        output_dir = Path(output_path).parent
-        
-        if output_format in ['json', 'both']:
-            json_path = output_dir / f"{base_path}_predictions.json"
-            with open(json_path, 'w') as f:
-                json.dump({
-                    'video_path': video_path,
-                    'total_frames': frame_count,
-                    'fps': fps,
-                    'resolution': [width, height],
-                    'predictions': all_predictions
-                }, f, indent=2)
-            print(f"✓ Saved JSON predictions to: {json_path}")
-        
-        if output_format in ['txt', 'both']:
-            txt_path = output_dir / f"{base_path}_predictions.txt"
-            with open(txt_path, 'w') as f:
-                f.write(f"Video: {video_path}\n")
-                f.write(f"Total Frames: {frame_count}\n")
-                f.write(f"FPS: {fps}\n")
-                f.write(f"Resolution: {width}x{height}\n\n")
-                
-                for frame_pred in all_predictions:
-                    f.write(f"Frame {frame_pred['frame_number']}:\n")
-                    f.write(f"  Detections: {frame_pred['num_detections']}\n")
+    # Save predictions if requested
+    if save_predictions and frame_predictions:
+        if output_format == 'json':
+            pred_path = output_path.replace('.mp4', '_predictions.json')
+            with open(pred_path, 'w') as f:
+                json.dump(frame_predictions, f, indent=2)
+        elif output_format == 'txt':
+            pred_path = output_path.replace('.mp4', '_predictions.txt')
+            with open(pred_path, 'w') as f:
+                for frame_pred in frame_predictions:
+                    f.write(f"Frame {frame_pred['frame']}:\n")
                     for det in frame_pred['detections']:
-                        f.write(f"    - Class: {det['class_name']} (ID: {det['label']})\n")
-                        f.write(f"      Score: {det['score']:.4f}\n")
-                        f.write(f"      BBox: [{det['bbox'][0]:.2f}, {det['bbox'][1]:.2f}, "
-                               f"{det['bbox'][2]:.2f}, {det['bbox'][3]:.2f}]\n")
-                        f.write(f"      Centroid: [{det['centroid'][0]:.2f}, {det['centroid'][1]:.2f}]\n")
+                        f.write(f"  {det['class_name']}: {det['score']:.3f} "
+                               f"bbox={det['bbox']} centroid={det['centroid']}\n")
                     f.write("\n")
-            print(f"✓ Saved TXT predictions to: {txt_path}")
+    
+    stats = {
+        'total_frames': frame_idx,
+        'output_video': output_path,
+        'predictions_file': pred_path if save_predictions else None
+    }
+    
+    print(f"✓ Video processing complete: {output_path}")
+    return stats
 
 
 def main(args):
-    """Main function."""
+    """Main function for command-line usage."""
     device = args.device
     if device == 'cuda' and not torch.cuda.is_available():
         device = 'cpu'
@@ -234,15 +221,26 @@ def main(args):
     model, cfg = load_model(args.checkpoint, args.config, device)
     
     # Process video
-    process_video(
-        model, args.input, args.output, device,
-        args.conf_threshold, args.save_predictions, args.output_format
+    stats = process_video(
+        model=model,
+        video_path=args.input,
+        output_path=args.output,
+        device=device,
+        conf_threshold=args.conf_threshold,
+        save_predictions=args.save_predictions,
+        output_format=args.output_format
     )
+    
+    print(f"\nProcessing Statistics:")
+    print(f"  Total frames: {stats['total_frames']}")
+    print(f"  Output video: {stats['output_video']}")
+    if stats['predictions_file']:
+        print(f"  Predictions file: {stats['predictions_file']}")
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Process video with RT-DETR and save output with bounding boxes"
+        description="Process video with RT-DETR - Draw bounding boxes and save predictions"
     )
     
     parser.add_argument(
@@ -255,29 +253,28 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         '--input', '-i', type=str, required=True,
-        help='Path to input video'
+        help='Path to input video file'
     )
     parser.add_argument(
         '--output', '-o', type=str, required=True,
-        help='Path to save output video'
+        help='Path to save output video with bounding boxes'
     )
     parser.add_argument(
         '--conf-threshold', type=float, default=0.5,
         help='Confidence threshold for detections'
     )
     parser.add_argument(
+        '--save-predictions', action='store_true', default=False,
+        help='Save predictions to JSON/TXT file'
+    )
+    parser.add_argument(
+        '--output-format', type=str, choices=['json', 'txt'], default='json',
+        help='Format for predictions file'
+    )
+    parser.add_argument(
         '--device', type=str, default='cuda',
         choices=['cuda', 'cpu'],
         help='Device to run inference on'
-    )
-    parser.add_argument(
-        '--save-predictions', action='store_true', default=True,
-        help='Save predictions as txt/json files'
-    )
-    parser.add_argument(
-        '--output-format', type=str, default='both',
-        choices=['json', 'txt', 'both'],
-        help='Format for prediction files'
     )
     
     args = parser.parse_args()

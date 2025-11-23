@@ -1,0 +1,78 @@
+# RT-DETR Config for Saliency-Enhanced D2-City Dataset
+# Uses SaliencyEnhancedD2CityDatasetRTDETR
+# 
+# This config is for working with PRE-PROCESSED saliency-enhanced frames.
+# These frames have already gone through:
+# 1. Input acquisition (D2-City videos)
+# 2. Basic preprocessing
+# 3. Saliency model processing
+# 4. Enhanced frame creation (Frame × Saliency Mask)
+#
+# No data loading or preprocessing needed - just load enhanced frames directly.
+
+__include__:
+  - ./rtdetr_base/runtime.yml
+  - ./rtdetr_base/rtdetr/include/dataloader.yml
+  - ./rtdetr_base/rtdetr/include/optimizer.yml
+  - ./rtdetr_base/rtdetr/include/rtdetr_r50vd.yml
+
+task: detection
+
+num_classes: 80  # COCO classes (for transfer learning)
+remap_mscoco_category: True
+
+train_dataloader:
+  type: DataLoader
+  dataset:
+    type: SaliencyEnhancedD2CityDatasetRTDETR
+    root_dir: ./datasets/d2_city_saliency_enhanced/train
+    image_extensions: ['.jpg', '.jpeg', '.png']
+    return_masks: False
+    transforms:
+      type: Compose
+      ops:
+        - type: RandomPhotometricDistort
+        - type: RandomZoomOut
+          max_size: 1333
+        - type: RandomHorizontalFlip
+          p: 0.5
+        - type: Resize
+          size: [640, 640]
+        - type: ToImageTensor
+        - type: ConvertDtype
+        - type: SanitizeBoundingBox
+  shuffle: True
+  batch_size: 8
+  num_workers: 4
+  drop_last: True
+
+val_dataloader:
+  type: DataLoader
+  dataset:
+    type: SaliencyEnhancedD2CityDatasetRTDETR
+    root_dir: ./datasets/d2_city_saliency_enhanced/val
+    image_extensions: ['.jpg', '.jpeg', '.png']
+    return_masks: False
+    transforms:
+      type: Compose
+      ops:
+        - type: Resize
+          size: [640, 640]
+        - type: ToImageTensor
+        - type: ConvertDtype
+        - type: SanitizeBoundingBox
+  shuffle: False
+  batch_size: 8
+  num_workers: 4
+  drop_last: False
+
+output_dir: ./output/d2city_saliency_enhanced_rtdetr_r50vd
+
+# Fine-tuning settings
+epoches: 50
+log_step: 50
+checkpoint_step: 5
+use_ema: True
+use_amp: True
+clip_max_norm: 0.1
+

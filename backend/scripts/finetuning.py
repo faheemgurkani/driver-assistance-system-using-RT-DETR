@@ -15,10 +15,12 @@ sys.path.insert(0, str(backend_path))
 # Register custom datasets
 try:
     sys.path.insert(0, str(backend_path / "src" / "datasets"))
-    from register_rtdetr import D2CityDatasetRTDETR
-    print("✓ Registered D2-City dataset with RT-DETR")
+    from register_rtdetr import D2CityDatasetRTDETR, SaliencyEnhancedD2CityDatasetRTDETR
+    print("✓ Registered D2-City datasets with RT-DETR")
+    print("  - D2CityDatasetRTDETR (original videos with preprocessing)")
+    print("  - SaliencyEnhancedD2CityDatasetRTDETR (pre-processed enhanced frames)")
 except Exception as e:
-    print(f"Warning: Could not register dataset: {e}")
+    print(f"Warning: Could not register datasets: {e}")
 
 # Import RT-DETR modules from local copy
 import src.rtdetr.misc.dist as dist
