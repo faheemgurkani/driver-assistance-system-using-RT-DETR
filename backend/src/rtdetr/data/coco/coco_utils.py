@@ -122,17 +122,38 @@ def convert_to_coco_api(ds):
     coco_ds = COCO()
     # annotation IDs need to start at 1, not 0, see torchvision issue #1530
     ann_id = 1
-    dataset = {"images": [], "categories": [], "annotations": []}
+    # COCO format requires 'info' field for compatibility with pycocotools
+    dataset = {
+        "info": {
+            "description": "D2-City Dataset converted to COCO format",
+            "version": "1.0",
+            "year": 2024
+        },
+        "images": [], 
+        "categories": [], 
+        "annotations": []
+    }
     categories = set()
     for img_idx in range(len(ds)):
         # find better way to get target
         # targets = ds.get_annotations(img_idx)
-        img, targets = ds[img_idx]
+        # Try to get sample without transforms (for custom datasets)
+        if hasattr(ds, '_load_sample'):
+            img, targets = ds._load_sample(img_idx, apply_transforms=False)
+        else:
+            img, targets = ds[img_idx]
         image_id = targets["image_id"].item()
         img_dict = {}
         img_dict["id"] = image_id
-        img_dict["height"] = img.shape[-2]
-        img_dict["width"] = img.shape[-1]
+        # Handle both PIL Images and tensors
+        if hasattr(img, 'shape'):
+            # Tensor format (after transforms)
+            img_dict["height"] = img.shape[-2]
+            img_dict["width"] = img.shape[-1]
+        else:
+            # PIL Image format (before transforms)
+            img_dict["height"] = img.height
+            img_dict["width"] = img.width
         dataset["images"].append(img_dict)
         bboxes = targets["boxes"].clone()
         bboxes[:, 2:] -= bboxes[:, :2]
@@ -147,6 +168,21 @@ def convert_to_coco_api(ds):
         if "keypoints" in targets:
             keypoints = targets["keypoints"]
             keypoints = keypoints.reshape(keypoints.shape[0], -1).tolist()
+        
+        # Check if we need to remap labels from class indices (0-79) to category IDs (1-90)
+        # This is needed when remap_mscoco_category=True in config (postprocessor remaps predictions)
+        # Import here to avoid circular dependencies
+        try:
+            from ..coco.coco_dataset import mscoco_label2category
+            # Check if labels are class indices (0-79) that need remapping
+            # If any label is >= 80, assume they're already category IDs
+            needs_remap = any(0 <= label < 80 for label in labels if labels)
+            if needs_remap:
+                labels = [mscoco_label2category.get(label, label) for label in labels]
+        except (ImportError, AttributeError):
+            # If remapping not available, use labels as-is
+            pass
+        
         num_objs = len(bboxes)
         for i in range(num_objs):
             ann = {}

@@ -12,7 +12,7 @@ import torch.nn.functional as F
 import torchvision
 
 # from torchvision.ops import box_convert, generalized_box_iou
-from .box_ops import box_cxcywh_to_xyxy, box_iou, generalized_box_iou
+from .box_ops import box_cxcywh_to_xyxy, box_iou, generalized_box_iou, sanitize_boxes
 
 from ...misc.dist import get_world_size, is_dist_available_and_initialized
 from ...core import register
@@ -113,8 +113,23 @@ class SetCriterion(nn.Module):
         idx = self._get_src_permutation_idx(indices)
 
         src_boxes = outputs['pred_boxes'][idx]
-        target_boxes = torch.cat([t['boxes'][i] for t, (_, i) in zip(targets, indices)], dim=0)
-        ious, _ = box_iou(box_cxcywh_to_xyxy(src_boxes), box_cxcywh_to_xyxy(target_boxes))
+        # Extract target boxes and ensure they're tensors (not datapoints)
+        target_boxes_list = []
+        for t, (_, i) in zip(targets, indices):
+            boxes = t['boxes'][i]
+            # Convert from datapoints to tensor if needed
+            if hasattr(boxes, 'data'):  # datapoints.BoundingBox
+                boxes = boxes.data.clone()
+            elif not isinstance(boxes, torch.Tensor):
+                boxes = torch.as_tensor(boxes, device=src_boxes.device)
+            else:
+                boxes = boxes.clone()
+            target_boxes_list.append(boxes)
+        target_boxes = torch.cat(target_boxes_list, dim=0) if target_boxes_list else torch.empty((0, 4), device=src_boxes.device)
+        # Convert to xyxy and sanitize boxes before computing IoU
+        src_boxes_xyxy = sanitize_boxes(box_cxcywh_to_xyxy(src_boxes))
+        target_boxes_xyxy = sanitize_boxes(box_cxcywh_to_xyxy(target_boxes))
+        ious, _ = box_iou(src_boxes_xyxy, target_boxes_xyxy)
         ious = torch.diag(ious).detach()
 
         src_logits = outputs['pred_logits']
@@ -157,17 +172,43 @@ class SetCriterion(nn.Module):
         assert 'pred_boxes' in outputs
         idx = self._get_src_permutation_idx(indices)
         src_boxes = outputs['pred_boxes'][idx]
-        target_boxes = torch.cat([t['boxes'][i] for t, (_, i) in zip(targets, indices)], dim=0)
+        
+        # Get device from src_boxes or outputs
+        device = src_boxes.device if src_boxes.numel() > 0 else next(iter(outputs.values())).device
+        
+        # Extract target boxes and ensure they're tensors (not datapoints)
+        target_boxes_list = []
+        for t, (_, i) in zip(targets, indices):
+            if len(i) > 0:  # Only process if there are matched targets
+                boxes = t['boxes'][i]
+                # Convert from datapoints to tensor if needed
+                if hasattr(boxes, 'data'):  # datapoints.BoundingBox
+                    boxes = boxes.data.clone()
+                elif not isinstance(boxes, torch.Tensor):
+                    boxes = torch.as_tensor(boxes, device=device)
+                else:
+                    boxes = boxes.clone()
+                target_boxes_list.append(boxes)
+        target_boxes = torch.cat(target_boxes_list, dim=0) if target_boxes_list else torch.empty((0, 4), device=device)
 
         losses = {}
 
-        loss_bbox = F.l1_loss(src_boxes, target_boxes, reduction='none')
-        losses['loss_bbox'] = loss_bbox.sum() / num_boxes
+        # Only compute box losses if there are matched boxes
+        if target_boxes.numel() > 0 and src_boxes.numel() > 0:
+            loss_bbox = F.l1_loss(src_boxes, target_boxes, reduction='none')
+            losses['loss_bbox'] = loss_bbox.sum() / num_boxes
 
-        loss_giou = 1 - torch.diag(generalized_box_iou(
-                box_cxcywh_to_xyxy(src_boxes),
-                box_cxcywh_to_xyxy(target_boxes)))
-        losses['loss_giou'] = loss_giou.sum() / num_boxes
+            # Convert to xyxy format and compute GIoU
+            # Note: box_cxcywh_to_xyxy already sanitizes boxes, but we ensure it here too
+            src_boxes_xyxy = sanitize_boxes(box_cxcywh_to_xyxy(src_boxes))
+            target_boxes_xyxy = sanitize_boxes(box_cxcywh_to_xyxy(target_boxes))
+            loss_giou = 1 - torch.diag(generalized_box_iou(src_boxes_xyxy, target_boxes_xyxy))
+            losses['loss_giou'] = loss_giou.sum() / num_boxes
+        else:
+            # If no matched boxes, return zero losses
+            losses['loss_bbox'] = torch.tensor(0.0, device=device)
+            losses['loss_giou'] = torch.tensor(0.0, device=device)
+        
         return losses
 
     def loss_masks(self, outputs, targets, indices, num_boxes):
@@ -333,7 +374,8 @@ def accuracy(output, target, topk=(1,)):
     res = []
     for k in topk:
         correct_k = correct[:k].view(-1).float().sum(0)
-        res.append(correct_k.mul_(100.0 / batch_size))
+        # Use non-inplace operation to avoid MPS gradient issues
+        res.append(correct_k * (100.0 / batch_size))
     return res
 
 

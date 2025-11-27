@@ -31,7 +31,7 @@ class BaseSolver(object):
 
         # NOTE (lvwenyu): should load_tuning_state before ema instance building
         if self.cfg.tuning:
-            print(f'Tuning checkpoint from {self.cfg.tuning}')
+            # print(f'Tuning checkpoint from {self.cfg.tuning}')  # Suppressed for cleaner output
             self.load_tuning_state(self.cfg.tuning)
 
         self.scaler = cfg.scaler
@@ -48,7 +48,7 @@ class BaseSolver(object):
 
         # NOTE instantiating order
         if self.cfg.resume:
-            print(f'Resume checkpoint from {self.cfg.resume}')
+            # print(f'Resume checkpoint from {self.cfg.resume}')  # Suppressed for cleaner output
             self.resume(self.cfg.resume)
 
         self.train_dataloader = dist.warp_loader(self.cfg.train_dataloader, \
@@ -63,7 +63,7 @@ class BaseSolver(object):
             shuffle=self.cfg.val_dataloader.shuffle)
 
         if self.cfg.resume:
-            print(f'resume from {self.cfg.resume}')
+            # print(f'resume from {self.cfg.resume}')  # Suppressed for cleaner output
             self.resume(self.cfg.resume)
 
 
@@ -99,30 +99,30 @@ class BaseSolver(object):
         # TODO
         if getattr(self, 'last_epoch', None) and 'last_epoch' in state:
             self.last_epoch = state['last_epoch']
-            print('Loading last_epoch')
+            # print('Loading last_epoch')  # Suppressed for cleaner output
 
         if getattr(self, 'model', None) and 'model' in state:
             if dist.is_parallel(self.model):
                 self.model.module.load_state_dict(state['model'])
             else:
                 self.model.load_state_dict(state['model'])
-            print('Loading model.state_dict')
+            # print('Loading model.state_dict')  # Suppressed for cleaner output
 
         if getattr(self, 'ema', None) and 'ema' in state:
             self.ema.load_state_dict(state['ema'])
-            print('Loading ema.state_dict')
+            # print('Loading ema.state_dict')  # Suppressed for cleaner output
 
         if getattr(self, 'optimizer', None) and 'optimizer' in state:
             self.optimizer.load_state_dict(state['optimizer'])
-            print('Loading optimizer.state_dict')
+            # print('Loading optimizer.state_dict')  # Suppressed for cleaner output
 
         if getattr(self, 'lr_scheduler', None) and 'lr_scheduler' in state:
             self.lr_scheduler.load_state_dict(state['lr_scheduler'])
-            print('Loading lr_scheduler.state_dict')
+            # print('Loading lr_scheduler.state_dict')  # Suppressed for cleaner output
 
         if getattr(self, 'scaler', None) and 'scaler' in state:
             self.scaler.load_state_dict(state['scaler'])
-            print('Loading scaler.state_dict')
+            # print('Loading scaler.state_dict')  # Suppressed for cleaner output
 
 
     def save(self, path):
@@ -156,7 +156,7 @@ class BaseSolver(object):
             stat, infos = self._matched_state(module.state_dict(), state['model'])
 
         module.load_state_dict(stat, strict=False)
-        print(f'Load model.state_dict, {infos}')
+        # print(f'Load model.state_dict, {infos}')  # Suppressed for cleaner output
 
     @staticmethod
     def _matched_state(state: Dict[str, torch.Tensor], params: Dict[str, torch.Tensor]):

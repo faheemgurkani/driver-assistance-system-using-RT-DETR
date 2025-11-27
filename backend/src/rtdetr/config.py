@@ -181,8 +181,6 @@ class BaseConfig(object):
 
     @property
     def scaler(self) -> GradScaler: 
-        # GradScaler is only for CUDA; MPS doesn't need it
-        # MPS training works without scaler (uses regular backward())
         if self._scaler is None and self.use_amp and torch.cuda.is_available():
             self._scaler = GradScaler()
         return self._scaler

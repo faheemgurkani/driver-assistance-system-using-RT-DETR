@@ -1,139 +1,185 @@
 """
 Training Script for Driver Assistance System using RT-DETR
-Inspired by rtdetr_pytorch/tools/train.py
-Establishes model from config, loads pretrained weights, then trains
 """
 
 import os
 import sys
 import argparse
+import torch
+import torch.nn as nn
 from pathlib import Path
+from typing import Optional
 
 # Add backend to path
 backend_path = Path(__file__).parent.parent
 sys.path.insert(0, str(backend_path))
 
-# Register custom datasets
-try:
-    sys.path.insert(0, str(backend_path / "src" / "datasets"))
-    from register_rtdetr import D2CityDatasetRTDETR, SaliencyEnhancedD2CityDatasetRTDETR
-    print("✓ Registered D2-City datasets with RT-DETR")
-    print("  - D2CityDatasetRTDETR (original videos with preprocessing)")
-    print("  - SaliencyEnhancedD2CityDatasetRTDETR (pre-processed enhanced frames)")
-except Exception as e:
-    print(f"Warning: Could not register datasets: {e}")
+# Add project root to path (for RT-DETR)
+project_root = backend_path.parent
+sys.path.insert(0, str(project_root))
 
-# Import RT-DETR modules from local copy
-import src.rtdetr.misc.dist as dist 
-from src.rtdetr.core import YAMLConfig 
-from src.rtdetr.solver import TASKS
+# Add RT-DETR to path
+rtdetr_path = project_root.parent / "rtdetr_pytorch"
+if rtdetr_path.exists():
+    sys.path.insert(0, str(rtdetr_path))
+
+from src.utils import build_dataloader, PreprocessTransforms
+from src.datasets import DatasetFactory
 
 
-def main(args) -> None:
+def load_rtdetr_model(config_path: str, checkpoint_path: Optional[str] = None):
     """
-    Main training function.
+    Load RT-DETR model from config.
     
-    Flow:
-    1. Load config -> establishes model architecture from YAML
-    2. If tuning: load pretrained weights into established model
-    3. If resume: load full checkpoint (model + optimizer + scheduler)
-    4. Train using RT-DETR's solver
+    Args:
+        config_path: Path to RT-DETR config YAML
+        checkpoint_path: Optional path to checkpoint to resume from
+    
+    Returns:
+        RT-DETR model, criterion, optimizer
     """
-    # Initialize distributed training
-    dist.init_distributed()
+    from src.core import YAMLConfig
     
-    if args.seed is not None:
-        dist.set_seed(args.seed)
+    cfg = YAMLConfig(config_path, resume=checkpoint_path)
+    
+    # Get model from config
+    from src.core import GLOBAL_CONFIG
+    model = GLOBAL_CONFIG['model']()
+    
+    # Get criterion
+    criterion = GLOBAL_CONFIG['criterion']()
+    
+    # Get optimizer
+    optimizer = GLOBAL_CONFIG['optimizer'](model.parameters())
+    
+    return model, criterion, optimizer, cfg
 
-    # Validate arguments
-    assert not all([args.tuning, args.resume]), \
-        'Only support from_scratch or resume or tuning at one time'
 
-    # Load RT-DETR config
-    # This establishes the model architecture from YAML config
-    # Supports both scenarios:
-    # - Original D2-City: d2city_rtdetr.yml (data loading + preprocessing)
-    # - Saliency-Enhanced: d2city_saliency_enhanced_rtdetr.yml (data loading only)
-    if args.config:
-        config_path = args.config
-    elif args.saliency_enhanced:
-        config_path = str(backend_path / "configs" / "d2city_saliency_enhanced_rtdetr.yml")
-    else:
-        config_path = str(backend_path / "configs" / "d2city_rtdetr.yml")
+def train_epoch(model, dataloader, criterion, optimizer, device, epoch):
+    """Train for one epoch."""
+    model.train()
+    total_loss = 0.0
+    num_batches = 0
     
-    if not os.path.exists(config_path):
-        raise FileNotFoundError(f"Config file not found: {config_path}")
+    for batch_idx, (images, targets) in enumerate(dataloader):
+        images = images.to(device)
+        targets = [{k: v.to(device) if isinstance(v, torch.Tensor) else v 
+                   for k, v in t.items()} for t in targets]
+        
+        # Forward pass
+        outputs = model(images, targets)
+        
+        # Compute loss
+        loss_dict = criterion(outputs, targets)
+        loss = sum(loss_dict.values())
+        
+        # Backward pass
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+        
+        total_loss += loss.item()
+        num_batches += 1
+        
+        if batch_idx % 10 == 0:
+            print(f"Epoch {epoch}, Batch {batch_idx}/{len(dataloader)}, "
+                  f"Loss: {loss.item():.4f}")
     
-    print(f"Loading config from: {config_path}")
-    print("Step 1: Establishing model architecture from config...")
+    avg_loss = total_loss / num_batches if num_batches > 0 else 0.0
+    return avg_loss
+
+
+def main(args):
+    """Main training function."""
+    # Set device
+    device = torch.device("cuda" if torch.cuda.is_available() and not args.cpu else "cpu")
+    print(f"Using device: {device}")
     
-    cfg = YAMLConfig(
-        config_path,
-        resume=args.resume,  # For resuming training
-        use_amp=args.amp,
-        tuning=args.tuning   # For fine-tuning from pretrained weights
+    # Build dataloader
+    print(f"Loading dataset from: {args.data_root}")
+    train_loader = build_dataloader(
+        dataset_name=args.dataset_name,
+        root_dir=args.data_root,
+        batch_size=args.batch_size,
+        num_workers=args.num_workers,
+        shuffle=True
     )
+    print(f"Dataset loaded: {len(train_loader.dataset)} samples")
     
-    # Step 2: Model is established via cfg.model property
-    # If tuning is set, pretrained weights will be loaded in solver.setup()
-    # If resume is set, full checkpoint will be loaded in solver.train()
-    print("Step 2: Model architecture established")
-    if args.tuning:
-        print(f"  → Will load pretrained weights from: {args.tuning}")
-    elif args.resume:
-        print(f"  → Will resume from checkpoint: {args.resume}")
+    # Load RT-DETR model
+    if args.rtdetr_config:
+        print(f"Loading RT-DETR model from config: {args.rtdetr_config}")
+        model, criterion, optimizer, cfg = load_rtdetr_model(
+            args.rtdetr_config,
+            args.resume
+        )
     else:
-        print("  → Training from scratch")
-
-    # Step 3: Create solver (handles model setup, weight loading, training)
-    print("Step 3: Creating solver...")
-    solver = TASKS[cfg.yaml_cfg['task']](cfg)
+        # Use default RT-DETR config
+        default_config = rtdetr_path / "configs" / "rtdetr" / "rtdetr_r50vd_6x_coco.yml"
+        if default_config.exists():
+            print(f"Using default config: {default_config}")
+            model, criterion, optimizer, cfg = load_rtdetr_model(
+                str(default_config),
+                args.resume
+            )
+        else:
+            raise ValueError("No RT-DETR config provided and default not found")
     
-    if args.test_only:
-        # Validation only
-        print("Running validation only...")
-        solver.val()
-    else:
-        # Training
-        print("Starting training...")
-        solver.fit()
+    model = model.to(device)
+    
+    # Training loop
+    print("Starting training...")
+    for epoch in range(args.epochs):
+        avg_loss = train_epoch(model, train_loader, criterion, optimizer, device, epoch)
+        print(f"Epoch {epoch+1}/{args.epochs} completed. Average Loss: {avg_loss:.4f}")
+        
+        # Save checkpoint
+        if (epoch + 1) % args.save_interval == 0:
+            checkpoint_path = os.path.join(args.output_dir, f"checkpoint_epoch_{epoch+1}.pth")
+            os.makedirs(args.output_dir, exist_ok=True)
+            torch.save({
+                'epoch': epoch,
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'loss': avg_loss,
+            }, checkpoint_path)
+            print(f"Checkpoint saved: {checkpoint_path}")
+    
     print("Training completed!")
 
 
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser(
-        description="Train RT-DETR on D2-City Dataset (inspired by rtdetr_pytorch/tools/train.py)"
-    )
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Train Driver Assistance System with RT-DETR")
     
-    parser.add_argument(
-        '--config', '-c', type=str, default=None,
-        help='Path to RT-DETR config YAML file. '
-             'Defaults: d2city_rtdetr.yml (original) or d2city_saliency_enhanced_rtdetr.yml (if --saliency-enhanced)'
-    )
-    parser.add_argument(
-        '--saliency-enhanced', action='store_true', default=False,
-        help='Use saliency-enhanced D2-City dataset (pre-processed frames, no preprocessing needed)'
-    )
-    parser.add_argument(
-        '--resume', '-r', type=str, default=None,
-        help='Path to checkpoint to resume training from'
-    )
-    parser.add_argument(
-        '--tuning', '-t', type=str, default=None,
-        help='Path to pretrained checkpoint for fine-tuning'
-    )
-    parser.add_argument(
-        '--test-only', action='store_true', default=False,
-        help='Run validation only'
-    )
-    parser.add_argument(
-        '--amp', action='store_true', default=False,
-        help='Use automatic mixed precision'
-    )
-    parser.add_argument(
-        '--seed', type=int, default=None,
-        help='Random seed for reproducibility'
-    )
+    # Dataset arguments
+    parser.add_argument("--data-root", type=str, required=True,
+                       help="Root directory of the dataset")
+    parser.add_argument("--dataset-name", type=str, default=None,
+                       help="Dataset name (kitti, d2_city, etc.). Auto-detected if not provided")
+    
+    # Training arguments
+    parser.add_argument("--batch-size", type=int, default=8,
+                       help="Batch size for training")
+    parser.add_argument("--epochs", type=int, default=100,
+                       help="Number of training epochs")
+    parser.add_argument("--num-workers", type=int, default=4,
+                       help="Number of data loading workers")
+    
+    # Model arguments
+    parser.add_argument("--rtdetr-config", type=str, default=None,
+                       help="Path to RT-DETR config YAML file")
+    parser.add_argument("--resume", type=str, default=None,
+                       help="Path to checkpoint to resume from")
+    
+    # Output arguments
+    parser.add_argument("--output-dir", type=str, default="./checkpoints",
+                       help="Directory to save checkpoints")
+    parser.add_argument("--save-interval", type=int, default=10,
+                       help="Save checkpoint every N epochs")
+    
+    # Other arguments
+    parser.add_argument("--cpu", action="store_true",
+                       help="Force CPU usage")
     
     args = parser.parse_args()
     main(args)

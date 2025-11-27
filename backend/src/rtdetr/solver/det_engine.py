@@ -31,22 +31,23 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
     
     ema = kwargs.get('ema', None)
     scaler = kwargs.get('scaler', None)
+    
+    # MPS doesn't support GradScaler - disable it for MPS devices
+    # This prevents inplace operation errors during backward pass
+    if device.type == 'mps' and scaler is not None:
+        scaler = None
 
     for samples, targets in metric_logger.log_every(data_loader, print_freq, header):
         samples = samples.to(device)
         targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
 
-        if scaler is not None:
-            # For MPS, autocast may not be fully supported, so we disable it
-            if device.type == 'mps':
+        if scaler is not None and device.type != 'mps':
+            # Use AMP scaler for CUDA devices only
+            with torch.autocast(device_type=str(device.type), cache_enabled=True):
                 outputs = model(samples, targets)
+            
+            with torch.autocast(device_type=str(device.type), enabled=False):
                 loss_dict = criterion(outputs, targets)
-            else:
-                with torch.autocast(device_type=str(device.type), cache_enabled=True):
-                    outputs = model(samples, targets)
-                
-                with torch.autocast(device_type=str(device.type), enabled=False):
-                    loss_dict = criterion(outputs, targets)
 
             loss = sum(loss_dict.values())
             scaler.scale(loss).backward()
@@ -59,8 +60,15 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
             scaler.update()
             optimizer.zero_grad()
         else:
-            outputs = model(samples, targets)
-            loss_dict = criterion(outputs, targets)
+            # For MPS or when scaler is None, use regular backward pass
+            # MPS doesn't fully support AMP, so we skip autocast for MPS
+            if device.type == 'mps':
+                outputs = model(samples, targets)
+                loss_dict = criterion(outputs, targets)
+            else:
+                # For CPU or other devices, we can optionally use autocast
+                outputs = model(samples, targets)
+                loss_dict = criterion(outputs, targets)
             
             loss = sum(loss_dict.values())
             optimizer.zero_grad()

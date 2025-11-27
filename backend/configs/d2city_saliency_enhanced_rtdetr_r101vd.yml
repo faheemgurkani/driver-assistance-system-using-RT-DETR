@@ -1,6 +1,6 @@
-# RT-DETR Config for Saliency-Enhanced D2-City Dataset
+# RT-DETR Config for Saliency-Enhanced D2-City Dataset (R101VD)
 # Uses SaliencyEnhancedD2CityDatasetRTDETR
-# 
+#
 # This config is for working with PRE-PROCESSED saliency-enhanced frames.
 # These frames have already gone through:
 # 1. Input acquisition (D2-City videos)
@@ -18,22 +18,35 @@ __include__:
 
 task: detection
 
-num_classes: 80  # COCO classes (for transfer learning)
+num_classes: 80 # COCO classes (for transfer learning)
 remap_mscoco_category: True
+
+# Override for R101VD
+PResNet:
+  depth: 101
+
+HybridEncoder:
+  # intra
+  hidden_dim: 384
+  dim_feedforward: 2048
+
+RTDETRTransformer:
+  feat_channels: [384, 384, 384]
 
 train_dataloader:
   type: DataLoader
   dataset:
     type: SaliencyEnhancedD2CityDatasetRTDETR
-    root_dir: ./datasets/d2_city_saliency_enhanced/train
-    image_extensions: ['.jpg', '.jpeg', '.png']
+    root_dir: ./data/T2-saliency/enhanced_frames
+    image_extensions: [".jpg", ".jpeg", ".png"]
     return_masks: False
+    annotations_dir: ./data/annotations
     transforms:
       type: Compose
       ops:
         - type: RandomPhotometricDistort
         - type: RandomZoomOut
-          max_size: 1333
+          fill: 0
         - type: RandomHorizontalFlip
           p: 0.5
         - type: Resize
@@ -41,18 +54,23 @@ train_dataloader:
         - type: ToImageTensor
         - type: ConvertDtype
         - type: SanitizeBoundingBox
+          min_size: 1
+        - type: ConvertBox
+          out_fmt: "cxcywh"
+          normalize: True
   shuffle: True
-  batch_size: 8
-  num_workers: 4
+  batch_size: 2
+  num_workers: 2
   drop_last: True
 
 val_dataloader:
   type: DataLoader
   dataset:
     type: SaliencyEnhancedD2CityDatasetRTDETR
-    root_dir: ./datasets/d2_city_saliency_enhanced/val
-    image_extensions: ['.jpg', '.jpeg', '.png']
+    root_dir: ./data/T2-saliency/enhanced_frames
+    image_extensions: [".jpg", ".jpeg", ".png"]
     return_masks: False
+    annotations_dir: ./data/annotations
     transforms:
       type: Compose
       ops:
@@ -61,18 +79,28 @@ val_dataloader:
         - type: ToImageTensor
         - type: ConvertDtype
         - type: SanitizeBoundingBox
+          min_size: 1
+        - type: ConvertBox
+          out_fmt: "cxcywh"
+          normalize: True
   shuffle: False
-  batch_size: 8
-  num_workers: 4
+  batch_size: 2
+  num_workers: 2
   drop_last: False
 
-output_dir: ./output/d2city_saliency_enhanced_rtdetr_r50vd
+output_dir: ./output/d2city_saliency_enhanced_rtdetr_r101vd
 
 # Fine-tuning settings
-epoches: 50
-log_step: 50
-checkpoint_step: 5
+epoches: 1
+log_step: 10
+checkpoint_step: 1
 use_ema: True
 use_amp: True
 clip_max_norm: 0.1
+# Gradient checkpointing is enabled by default in RT-DETR code
+# (HybridEncoder and RTDETRTransformer use checkpoint=True for memory efficiency)
+
+# Device selection: Automatic (CUDA > MPS > CPU)
+# MPS (Apple Silicon GPU) is automatically enabled if available
+# Note: AMP scaler is only used with CUDA; MPS training works without scaler
 

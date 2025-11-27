@@ -196,7 +196,7 @@ class PResNet(nn.Module):
         if pretrained:
             state = torch.hub.load_state_dict_from_url(donwload_url[depth])
             self.load_state_dict(state)
-            print(f'Load PResNet{depth} state_dict')
+            # print(f'Load PResNet{depth} state_dict')  # Suppressed for cleaner output
             
     def _freeze_parameters(self, m: nn.Module):
         for p in m.parameters():

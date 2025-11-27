@@ -22,6 +22,11 @@ backend_path = Path(__file__).parent.parent
 sys.path.insert(0, str(backend_path))
 
 # Import RT-DETR from local copy
+# Ensure all modules register themselves before YAMLConfig is used
+import src.rtdetr.nn.backbone  # noqa: F401
+import src.rtdetr.data  # noqa: F401
+import src.rtdetr.optim  # noqa: F401
+import src.rtdetr.zoo  # noqa: F401
 from src.rtdetr.core import YAMLConfig
 from src.rtdetr.data.coco.coco_dataset import mscoco_label2category, mscoco_category2name
 

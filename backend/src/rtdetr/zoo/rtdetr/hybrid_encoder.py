@@ -162,16 +162,25 @@ class TransformerEncoderLayer(nn.Module):
 
 
 class TransformerEncoder(nn.Module):
-    def __init__(self, encoder_layer, num_layers, norm=None):
+    def __init__(self, encoder_layer, num_layers, norm=None, use_checkpoint=False):
         super(TransformerEncoder, self).__init__()
         self.layers = nn.ModuleList([copy.deepcopy(encoder_layer) for _ in range(num_layers)])
         self.num_layers = num_layers
         self.norm = norm
+        self.use_checkpoint = use_checkpoint
 
     def forward(self, src, src_mask=None, pos_embed=None) -> torch.Tensor:
         output = src
+        # Gradient checkpointing is completely disabled to avoid MPS inplace operation errors
+        use_checkpoint = False
+        
         for layer in self.layers:
-            output = layer(output, src_mask=src_mask, pos_embed=pos_embed)
+            if use_checkpoint and self.training:
+                # Use gradient checkpointing to save memory (currently disabled)
+                from torch.utils.checkpoint import checkpoint
+                output = checkpoint(layer, output, src_mask, pos_embed, use_reentrant=False)
+            else:
+                output = layer(output, src_mask=src_mask, pos_embed=pos_embed)
 
         if self.norm is not None:
             output = self.norm(output)
@@ -226,8 +235,13 @@ class HybridEncoder(nn.Module):
             dropout=dropout,
             activation=enc_act)
 
+        # Disable gradient checkpointing completely for MPS compatibility
+        # MPS has issues with inplace operations even without checkpointing
+        import torch
+        use_checkpoint = False  # Disabled completely to avoid MPS inplace operation errors
         self.encoder = nn.ModuleList([
-            TransformerEncoder(copy.deepcopy(encoder_layer), num_encoder_layers) for _ in range(len(use_encoder_idx))
+            TransformerEncoder(copy.deepcopy(encoder_layer), num_encoder_layers, use_checkpoint=use_checkpoint) 
+            for _ in range(len(use_encoder_idx))
         ])
 
         # top-down fpn
@@ -297,7 +311,9 @@ class HybridEncoder(nn.Module):
                     pos_embed = getattr(self, f'pos_embed{enc_ind}', None).to(src_flatten.device)
 
                 memory = self.encoder[i](src_flatten, pos_embed=pos_embed)
-                proj_feats[enc_ind] = memory.permute(0, 2, 1).reshape(-1, self.hidden_dim, h, w).contiguous()
+                # Create new list to avoid inplace modification (MPS compatibility)
+                new_feat = memory.permute(0, 2, 1).reshape(-1, self.hidden_dim, h, w).contiguous()
+                proj_feats = proj_feats[:enc_ind] + [new_feat] + proj_feats[enc_ind+1:]
                 # print([x.is_contiguous() for x in proj_feats ])
 
         # broadcasting and fusion
@@ -306,10 +322,12 @@ class HybridEncoder(nn.Module):
             feat_high = inner_outs[0]
             feat_low = proj_feats[idx - 1]
             feat_high = self.lateral_convs[len(self.in_channels) - 1 - idx](feat_high)
-            inner_outs[0] = feat_high
+            # Create new list instead of inplace modification (MPS compatibility)
+            inner_outs = [feat_high] + inner_outs[1:]
             upsample_feat = F.interpolate(feat_high, scale_factor=2., mode='nearest')
             inner_out = self.fpn_blocks[len(self.in_channels)-1-idx](torch.concat([upsample_feat, feat_low], dim=1))
-            inner_outs.insert(0, inner_out)
+            # Create new list instead of insert (MPS compatibility)
+            inner_outs = [inner_out] + inner_outs
 
         outs = [inner_outs[0]]
         for idx in range(len(self.in_channels) - 1):

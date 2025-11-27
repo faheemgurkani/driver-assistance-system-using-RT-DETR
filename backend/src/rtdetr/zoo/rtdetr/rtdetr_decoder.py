@@ -226,12 +226,13 @@ class TransformerDecoderLayer(nn.Module):
 
 
 class TransformerDecoder(nn.Module):
-    def __init__(self, hidden_dim, decoder_layer, num_layers, eval_idx=-1):
+    def __init__(self, hidden_dim, decoder_layer, num_layers, eval_idx=-1, use_checkpoint=False):
         super(TransformerDecoder, self).__init__()
         self.layers = nn.ModuleList([copy.deepcopy(decoder_layer) for _ in range(num_layers)])
         self.hidden_dim = hidden_dim
         self.num_layers = num_layers
         self.eval_idx = eval_idx if eval_idx >= 0 else num_layers + eval_idx
+        self.use_checkpoint = use_checkpoint
 
     def forward(self,
                 tgt,
@@ -253,9 +254,22 @@ class TransformerDecoder(nn.Module):
             ref_points_input = ref_points_detach.unsqueeze(2)
             query_pos_embed = query_pos_head(ref_points_detach)
 
-            output = layer(output, ref_points_input, memory,
-                           memory_spatial_shapes, memory_level_start_index,
-                           attn_mask, memory_mask, query_pos_embed)
+            # Gradient checkpointing is completely disabled to avoid MPS inplace operation errors
+            use_checkpoint = False
+            
+            if use_checkpoint and self.training:
+                # Use gradient checkpointing to save memory (currently disabled)
+                from torch.utils.checkpoint import checkpoint
+                output = checkpoint(
+                    layer, output, ref_points_input, memory,
+                    memory_spatial_shapes, memory_level_start_index,
+                    attn_mask, memory_mask, query_pos_embed,
+                    use_reentrant=False
+                )
+            else:
+                output = layer(output, ref_points_input, memory,
+                               memory_spatial_shapes, memory_level_start_index,
+                               attn_mask, memory_mask, query_pos_embed)
 
             inter_ref_bbox = F.sigmoid(bbox_head[i](output) + inverse_sigmoid(ref_points_detach))
 
@@ -328,7 +342,11 @@ class RTDETRTransformer(nn.Module):
 
         # Transformer module
         decoder_layer = TransformerDecoderLayer(hidden_dim, nhead, dim_feedforward, dropout, activation, num_levels, num_decoder_points)
-        self.decoder = TransformerDecoder(hidden_dim, decoder_layer, num_decoder_layers, eval_idx)
+        # Disable gradient checkpointing completely for MPS compatibility
+        # MPS has issues with inplace operations even without checkpointing
+        import torch
+        use_checkpoint = False  # Disabled completely to avoid MPS inplace operation errors
+        self.decoder = TransformerDecoder(hidden_dim, decoder_layer, num_decoder_layers, eval_idx, use_checkpoint=use_checkpoint)
 
         self.num_denoising = num_denoising
         self.label_noise_ratio = label_noise_ratio

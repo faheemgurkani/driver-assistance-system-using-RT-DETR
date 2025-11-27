@@ -14,7 +14,7 @@ from copy import deepcopy
 
 
 from ..core import register
-from ..misc.dist as dist 
+import src.rtdetr.misc.dist as dist 
 
 
 __all__ = ['ModelEMA']

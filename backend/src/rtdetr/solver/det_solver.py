@@ -17,23 +17,23 @@ from .det_engine import train_one_epoch, evaluate
 class DetSolver(BaseSolver):
     
     def fit(self, ):
-        print("Start training")
         self.train()
 
         args = self.cfg 
         
+        # Calculate number of parameters
         n_parameters = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
-        print('number of params:', n_parameters)
-
+        
         base_ds = get_coco_api_from_dataset(self.val_dataloader.dataset)
         # best_stat = {'coco_eval_bbox': 0, 'coco_eval_masks': 0, 'epoch': -1, }
         best_stat = {'epoch': -1, }
 
         start_time = time.time()
+        total_epochs = args.epoches - (self.last_epoch + 1)
+        
         for epoch in range(self.last_epoch + 1, args.epoches):
             if dist.is_dist_available_and_initialized():
                 self.train_dataloader.sampler.set_epoch(epoch)
-            
             train_stats = train_one_epoch(
                 self.model, self.criterion, self.train_dataloader, self.optimizer, self.device, epoch,
                 args.clip_max_norm, print_freq=args.log_step, ema=self.ema, scaler=self.scaler)
@@ -61,7 +61,7 @@ class DetSolver(BaseSolver):
                 else:
                     best_stat['epoch'] = epoch
                     best_stat[k] = test_stats[k][0]
-            print('best_stat: ', best_stat)
+            # best_stat: ', best_stat)  # Suppressed for cleaner output
 
 
             log_stats = {**{f'train_{k}': v for k, v in train_stats.items()},

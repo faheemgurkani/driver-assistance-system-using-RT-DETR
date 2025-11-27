@@ -4,14 +4,12 @@ A comprehensive driver assistance system implementation using RT-DETR (Real-Time
 
 ## Features
 
-- **Dual Pipeline Support**: Supports both Original D2-City dataset (with preprocessing) and Saliency-Enhanced dataset (pre-processed frames)
-- **D2-City Dataset Support**: Fine-tuned on D2-City video dataset
-- **RT-DETR Integration**: Uses RT-DETR's native PyTorch model implementation and training infrastructure
-- **Complete Pipeline**: Training, fine-tuning, inference, and evaluation
-- **Model Establishment**: Properly establishes model architecture from config, then loads pretrained weights
-- **Web Interface**: Minimalistic dark-themed Next.js frontend with FastAPI backend
-- **Pipeline Selector**: Frontend dropdown to choose between Original and Saliency-Enhanced pipelines
-- **Video Processing**: Upload dashcam videos and get processed videos with bounding boxes
+- **Dual Pipeline Support**: Original D2-City (video extraction) and Saliency-Enhanced (pre-processed frames)
+- **ResNet-101 Backbone**: All transfer-learning and inference paths default to the COCO-pretrained **RT-DETR R101VD** checkpoint (`rtdetr_r101vd_6x_coco.pth`)
+- **Complete RT-DETR Stack**: Standalone PyTorch implementation copied from RT-DETR for full control
+- **End-to-End Pipeline**: Training/fine-tuning scripts, FastAPI inference service, and Next.js frontend
+- **Inline Playback**: Backend re-encodes outputs to H.264/AAC and serves HTTP range responses for instant browser preview
+- **Mirrored Progress Logs**: Backend frame counts and re-encoding status show up inside the frontend terminal log
 
 ## RT-DETR Model Implementation
 
@@ -77,8 +75,8 @@ driver-assistance-system-using-RT-DETR/
 
 - Python 3.8+
 - Node.js 18+ with npm
-- RT-DETR checkpoint in `backend/checkpoints/`
-- CUDA (optional, for GPU acceleration)
+- **RT-DETR R101VD checkpoint** (`rtdetr_r101vd_6x_coco.pth`) placed in `backend/checkpoints/`
+- CUDA (optional) or Apple Silicon (MPS) for acceleration
 
 ### 1. Install Python Dependencies
 
@@ -112,10 +110,9 @@ npm install
 **Terminal 1 - Backend:**
 
 ```bash
-./start_backend.sh
-# or
-cd backend
-python api/run_server.py
+bash scripts/start_backend.sh
+# or from backend/api
+# python run_server.py
 ```
 
 Backend will run at: `http://localhost:8000`
@@ -123,10 +120,9 @@ Backend will run at: `http://localhost:8000`
 **Terminal 2 - Frontend:**
 
 ```bash
-./start_frontend.sh
-# or
-cd frontend
-npm run dev
+bash scripts/start_frontend.sh
+# or (from frontend/)
+# npm run dev
 ```
 
 Frontend will run at: `http://localhost:3000`
@@ -139,35 +135,40 @@ Frontend will run at: `http://localhost:3000`
    - **Saliency-Enhanced**: Uses pre-processed saliency-enhanced frames (no preprocessing)
 3. Upload a dashcam video
 4. Wait for processing
-5. View processed video with bounding boxes
-6. Download if needed
+5. View the processed video inline (FastAPI streams the MP4 with range support)
+6. Use the **Download Result** button to force a browser download (`attachment=1`)
+7. Monitor the terminal-style log to see frame progress and the final re-encoding status
+
+### Inline Preview & Download Flow
+
+- The backend always re-encodes processed videos to **H.264/AAC** with `faststart` so browsers can decode them.
+- `GET /download/{job_id}` supports HTTP range requests; the `<video>` tag loads metadata almost instantly and starts playing.
+- The same endpoint accepts `?attachment=1` to force a download—used by the frontend button.
 
 ## Usage
 
 ### Fine-Tuning on D2-City
 
-#### Scenario 1: Original D2-City Dataset (with preprocessing)
+> **Default setup**: All production runs use the **ResNet-101-VD COCO checkpoint** with the saliency-enhanced dataset (`configs/d2city_saliency_enhanced_rtdetr_r101vd.yml`). The legacy ResNet-50 config is kept only for backwards compatibility.
+
+#### Recommended: Saliency-Enhanced Dataset (ResNet-101)
 
 ```bash
-# Register dataset first
+# Register dataset (one-time)
 python -c "import sys; sys.path.insert(0, 'backend/src/datasets'); from register_rtdetr import *"
 
-# Fine-tune on original D2-City dataset
 python backend/scripts/finetuning.py \
-    --config backend/configs/d2city_rtdetr.yml \
+    --config backend/configs/d2city_saliency_enhanced_rtdetr_r101vd.yml \
     --pretrained-checkpoint backend/checkpoints/rtdetr_r101vd_6x_coco.pth \
     --amp
 ```
 
-#### Scenario 2: Saliency-Enhanced D2-City Dataset (pre-processed frames)
+#### Legacy: Original D2-City Videos (ResNet-50 config)
 
 ```bash
-# Register dataset first
-python -c "import sys; sys.path.insert(0, 'backend/src/datasets'); from register_rtdetr import *"
-
-# Fine-tune on saliency-enhanced dataset
+# Only needed if you want to re-run the legacy pipeline
 python backend/scripts/finetuning.py \
-    --config backend/configs/d2city_saliency_enhanced_rtdetr.yml \
+    --config backend/configs/d2city_rtdetr.yml \
     --pretrained-checkpoint backend/checkpoints/rtdetr_r101vd_6x_coco.pth \
     --amp
 ```
@@ -266,7 +267,15 @@ Get processing status.
 
 Download processed video.
 
-**Returns:** Video file (MP4)
+**Query Parameters:**
+
+- `attachment` (optional, default `false`): when `true`, forces `"Content-Disposition: attachment"` so the browser downloads the file immediately.
+
+**Behavior:**
+
+- Supports HTTP `Range` headers (partial content) for inline playback and scrubbing.
+- Always returns an H.264 MP4 so modern browsers can decode it without plugins.
+- `Accept-Ranges: bytes` is set on full responses; partial requests return `206`.
 
 #### `GET /health`
 

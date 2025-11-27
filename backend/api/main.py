@@ -6,13 +6,14 @@ Handles video upload, processing, and download
 import os
 import sys
 import uuid
+import re
 import asyncio
 from pathlib import Path
 from typing import Optional
 from datetime import datetime
 
-from fastapi import FastAPI, File, UploadFile, HTTPException, BackgroundTasks, Form
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi import FastAPI, File, UploadFile, HTTPException, BackgroundTasks, Form, Request
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import uvicorn
@@ -58,6 +59,42 @@ _model_cache = {
 processing_jobs = {}
 
 
+def build_range_response(file_path: Path, range_header: str, attachment: bool, job_id: str):
+    file_size = file_path.stat().st_size
+    range_match = re.match(r"bytes=(\d+)-(\d*)", range_header)
+    if not range_match:
+        return None
+    start = int(range_match.group(1))
+    end_str = range_match.group(2)
+    end = int(end_str) if end_str else file_size - 1
+    end = min(end, file_size - 1)
+    chunk_size = end - start + 1
+
+    def iter_file():
+        with open(file_path, "rb") as f:
+            f.seek(start)
+            remaining = chunk_size
+            while remaining > 0:
+                data = f.read(min(1024 * 1024, remaining))
+                if not data:
+                    break
+                remaining -= len(data)
+                yield data
+
+    headers = {
+        "Content-Range": f"bytes {start}-{end}/{file_size}",
+        "Accept-Ranges": "bytes",
+        "Content-Length": str(chunk_size),
+        "Content-Disposition": f'{"attachment" if attachment else "inline"}; filename="processed_{job_id}.mp4"',
+    }
+    return StreamingResponse(
+        iter_file(),
+        media_type="video/mp4",
+        headers=headers,
+        status_code=206,
+    )
+
+
 class ProcessingStatus(BaseModel):
     job_id: str
     status: str  # "pending", "processing", "completed", "error"
@@ -78,7 +115,13 @@ def load_model_once(checkpoint_path: str, config_path: Optional[str] = None, pip
         # Determine config path based on pipeline type
         if config_path is None:
             if pipeline_type == "saliency":
-                config_path = str(backend_path / "configs" / "d2city_saliency_enhanced_rtdetr.yml")
+                # Try R101VD config first (matches trained model), fallback to R50VD
+                r101vd_config = backend_path / "configs" / "d2city_saliency_enhanced_rtdetr_r101vd.yml"
+                r50vd_config = backend_path / "configs" / "d2city_saliency_enhanced_rtdetr.yml"
+                if r101vd_config.exists():
+                    config_path = str(r101vd_config)
+                elif r50vd_config.exists():
+                    config_path = str(r50vd_config)
             else:
                 config_path = str(backend_path / "configs" / "d2city_rtdetr.yml")
             
@@ -90,7 +133,14 @@ def load_model_once(checkpoint_path: str, config_path: Optional[str] = None, pip
         sys.path.insert(0, str(backend_path / "scripts"))
         from inference import load_model as load_inference_model
         
-        device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        # Device selection: CUDA > MPS > CPU
+        if torch.cuda.is_available():
+            device = 'cuda'
+        elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+            device = 'mps'
+        else:
+            device = 'cpu'
+        print(f"Using device: {device}")
         model, cfg = load_inference_model(checkpoint_path, config_path, device)
         
         _model_cache["model"] = model
@@ -111,7 +161,13 @@ def process_video_task(job_id: str, input_path: str, checkpoint_path: str, conf_
         
         # Load model with pipeline-specific config
         model, cfg = load_model_once(checkpoint_path, pipeline_type=pipeline_type)
-        device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        # Device is already set in load_model_once, but get it for process_video
+        if torch.cuda.is_available():
+            device = 'cuda'
+        elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+            device = 'mps'
+        else:
+            device = 'cpu'
         
         processing_jobs[job_id]["progress"] = 0.2
         processing_jobs[job_id]["message"] = "Processing video..."
@@ -124,6 +180,20 @@ def process_video_task(job_id: str, input_path: str, checkpoint_path: str, conf_
         sys.path.insert(0, str(backend_path / "scripts"))
         from process_video import process_video
         
+        def handle_progress(processed_frames: int, total_frames: int):
+            if processed_frames >= 0:
+                progress_ratio = processed_frames / max(total_frames, 1)
+                processing_jobs[job_id]["progress"] = min(0.2 + 0.75 * progress_ratio, 0.95)
+                processing_jobs[job_id]["message"] = (
+                    f"Processing frames... {processed_frames}/{total_frames}"
+                )
+            elif processed_frames == -1:
+                processing_jobs[job_id]["progress"] = 0.96
+                processing_jobs[job_id]["message"] = "Re-encoding video for browser preview..."
+            elif processed_frames == -2:
+                processing_jobs[job_id]["progress"] = 0.98
+                processing_jobs[job_id]["message"] = "Re-encoding complete. Finalizing output..."
+
         # Process video (this handles everything)
         process_video(
             model=model,
@@ -132,7 +202,8 @@ def process_video_task(job_id: str, input_path: str, checkpoint_path: str, conf_
             device=device,
             conf_threshold=conf_threshold,
             save_predictions=False,  # Skip predictions for API
-            output_format='json'
+            output_format='json',
+            progress_callback=handle_progress
         )
         
         processing_jobs[job_id]["status"] = "completed"
@@ -162,10 +233,18 @@ async def root():
 async def health():
     """Health check with model status."""
     model_loaded = _model_cache["model"] is not None
+    # Device detection
+    if torch.cuda.is_available():
+        device = "cuda"
+    elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+        device = "mps"
+    else:
+        device = "cpu"
+    
     return {
         "status": "ok",
         "model_loaded": model_loaded,
-        "device": "cuda" if torch.cuda.is_available() else "cpu"
+        "device": device
     }
 
 
@@ -203,13 +282,23 @@ async def upload_video(
         output_dir = backend_path / "output"
         
         if pipeline_type == "saliency":
-            # Look for saliency-enhanced checkpoint
-            saliency_checkpoint_dir = output_dir / "d2city_saliency_enhanced_rtdetr_r50vd"
-            if saliency_checkpoint_dir.exists():
-                checkpoints = list(saliency_checkpoint_dir.glob("*.pth"))
-                if checkpoints:
-                    checkpoint_path = str(checkpoints[0])
-                    print(f"Using saliency-enhanced checkpoint: {checkpoint_path}")
+            # Look for saliency-enhanced checkpoint (try R101VD first, then R50VD)
+            saliency_dirs = [
+                output_dir / "d2city_saliency_enhanced_rtdetr_r101vd",
+                output_dir / "d2city_saliency_enhanced_rtdetr_r50vd"
+            ]
+            for saliency_checkpoint_dir in saliency_dirs:
+                if saliency_checkpoint_dir.exists():
+                    # Prefer checkpoint.pth or checkpoint0000.pth over eval/ files
+                    checkpoints = list(saliency_checkpoint_dir.glob("checkpoint*.pth"))
+                    if not checkpoints:
+                        checkpoints = list(saliency_checkpoint_dir.glob("*.pth"))
+                    if checkpoints:
+                        # Sort to prefer checkpoint.pth or checkpoint0000.pth
+                        checkpoints.sort(key=lambda x: (x.name != "checkpoint.pth", x.name))
+                        checkpoint_path = str(checkpoints[0])
+                        print(f"Using saliency-enhanced checkpoint: {checkpoint_path}")
+                        break
         
         if checkpoint_path is None:
             # Fallback to original checkpoint
@@ -283,7 +372,7 @@ async def get_status(job_id: str):
 
 
 @app.get("/download/{job_id}")
-async def download_video(job_id: str):
+async def download_video(request: Request, job_id: str, attachment: bool = False):
     """Download processed video."""
     if job_id not in processing_jobs:
         raise HTTPException(status_code=404, detail="Job not found")
@@ -300,10 +389,20 @@ async def download_video(job_id: str):
     if not file_path.exists():
         raise HTTPException(status_code=404, detail="Output file not found on disk")
     
+    range_header = request.headers.get("range")
+    if range_header:
+        range_response = build_range_response(file_path, range_header, attachment, job_id)
+        if range_response is not None:
+            return range_response
+
+    disposition_type = "attachment" if attachment else "inline"
+    headers = {"Accept-Ranges": "bytes"}
     return FileResponse(
         path=str(file_path),
         filename=f"processed_{job_id}.mp4",
-        media_type="video/mp4"
+        media_type="video/mp4",
+        content_disposition_type=disposition_type,
+        headers=headers
     )
 
 

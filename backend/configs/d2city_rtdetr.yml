@@ -20,6 +20,7 @@ train_dataloader:
     frame_skip: 5
     max_frames_per_video: 100
     return_masks: False
+    annotations_dir: ./data/annotations
     transforms:
       type: Compose
       ops:
@@ -46,6 +47,7 @@ val_dataloader:
     frame_skip: 10
     max_frames_per_video: 50
     return_masks: False
+    annotations_dir: ./data/annotations
     transforms:
       type: Compose
       ops:
@@ -59,11 +61,11 @@ val_dataloader:
   num_workers: 4
   drop_last: False
 
-output_dir: ./output/d2city_rtdetr_r50vd
+output_dir: ./output/d2city_rtdetr_r101vd
 
 # Fine-tuning settings
-epoches: 50
-log_step: 50
+epoches: 1
+log_step: 10
 checkpoint_step: 5
 use_ema: True
 use_amp: True

@@ -11,7 +11,6 @@ import {
   CheckCircle2,
   Download,
   Terminal,
-  Activity,
   ArrowRight,
   ChevronDown,
 } from "lucide-react";
@@ -49,6 +48,7 @@ export default function Home() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const statusIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const logEndRef = useRef<HTMLDivElement>(null);
+  const lastStatusMessageRef = useRef<string | null>(null);
 
   // Auto-scroll logs
   useEffect(() => {
@@ -179,6 +179,10 @@ export default function Home() {
           setProgress(Math.round(data.progress * 100));
         }
         setStatusMessage(data.message || "Processing frames...");
+        if (data.message && data.message !== lastStatusMessageRef.current) {
+          addLog(data.message);
+          lastStatusMessageRef.current = data.message;
+        }
 
         if (
           data.status === "completed" ||
@@ -217,6 +221,18 @@ export default function Home() {
     setOutputUrl(`${API_URL}/download/${id}`);
   };
 
+  const handleDownloadClick = () => {
+    if (!outputUrl) return;
+    const downloadUrl = `${outputUrl}?attachment=1&ts=${jobId ?? ""}`;
+    const link = document.createElement("a");
+    link.href = downloadUrl;
+    link.download = `rtdetr_output_${jobId ?? "output"}.mp4`;
+    link.target = "_blank";
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
   const resetApp = () => {
     setViewState("idle");
     setFile(null);
@@ -225,6 +241,7 @@ export default function Home() {
     setLogs([]);
     setError(null);
     setOutputUrl(null);
+    lastStatusMessageRef.current = null;
     if (fileInputRef.current) {
       fileInputRef.current.value = "";
     }
@@ -415,9 +432,6 @@ export default function Home() {
                       />
                     </div>
 
-                    <div className="absolute top-0 right-0 p-4 opacity-20">
-                      <Activity className="w-12 h-12 text-white animate-pulse" />
-                    </div>
                   </div>
 
                   {/* Terminal Log Output */}
@@ -448,28 +462,33 @@ export default function Home() {
                       </span>
                     </div>
 
-                    <div className="flex-1 bg-black relative flex items-center justify-center group">
+                    <div className="flex-1 bg-black relative flex items-center justify-center group p-4">
                       <video
-                        src={outputUrl}
+                        key={jobId || outputUrl}
+                        src={`${outputUrl}?preview=1&ts=${jobId}`}
                         controls
-                        className="max-h-[60vh] w-full object-contain"
+                        preload="metadata"
+                        controlsList="nodownload"
+                        playsInline
+                        crossOrigin="anonymous"
+                        className="max-h-[50vh] w-full object-contain relative z-0"
                       />
                     </div>
 
-                    <div className="p-4 border-t border-white/10 flex justify-between items-center bg-black">
+                    <div className="p-4 border-t border-white/10 flex justify-between items-center bg-black relative z-10">
                       <button
                         onClick={resetApp}
                         className="text-sm text-neutral-500 hover:text-white transition-colors"
                       >
                         Process New Video
                       </button>
-                      <a
-                        href={outputUrl}
-                        download={`rtdetr_output_${jobId}.mp4`}
-                        className="bg-white text-black px-6 py-2 rounded-sm font-semibold hover:bg-neutral-200 transition-colors flex items-center gap-2 text-sm"
+                      <button
+                        onClick={handleDownloadClick}
+                        disabled={!outputUrl}
+                        className="bg-white text-black px-6 py-2 rounded-sm font-semibold hover:bg-neutral-200 transition-colors flex items-center gap-2 text-sm disabled:opacity-50 disabled:cursor-not-allowed"
                       >
                         <Download className="w-4 h-4" /> Download Result
-                      </a>
+                      </button>
                     </div>
                   </div>
                 </div>
