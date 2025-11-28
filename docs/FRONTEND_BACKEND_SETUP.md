@@ -122,6 +122,7 @@ The backend uses the following default paths:
 - **Inline Preview Pipeline**: Processed MP4s are re-encoded to H.264/AAC with `faststart` for guaranteed browser playback
 - **HTTP Range Streaming**: `/download/{job_id}` honors `Range` headers so previews can begin before the file finishes downloading
 - **Progress Mirroring**: Frame counts and re-encoding status are written to the job object and surface in the frontend System Log
+- **Automatic Prediction Logging**: Detailed JSON logs are automatically generated for every completed video processing job, containing all detection results with bounding boxes, class labels, confidence scores, timestamps, and statistics
 
 ---
 
@@ -218,6 +219,7 @@ http://localhost:8000
 | POST | `/upload` | Upload video for processing | None |
 | GET | `/status/{job_id}` | Get processing status | None |
 | GET | `/download/{job_id}` | Download processed video | None |
+| GET | `/logs/{job_id}` | Get prediction logs (JSON) | None |
 | GET | `/jobs` | List all processing jobs | None |
 
 ---
@@ -358,6 +360,7 @@ If `checkpoint_path` is not provided, the backend will:
 - `progress`: Progress value (0.0 to 1.0)
 - `message`: Human-readable status message
 - `output_file`: Filename of the processed video (only when status is "completed")
+- `log_file`: Filename of the prediction log JSON file (only when status is "completed")
 
 **Status Values**:
 - `"pending"`: Job is queued, waiting to start
@@ -407,7 +410,134 @@ curl "http://localhost:8000/download/550e8400-e29b-41d4-a716-446655440000" \
 
 ---
 
-### 6. List All Jobs
+### 6. Get Prediction Logs
+
+**Endpoint**: `GET /logs/{job_id}`
+
+**Description**: Retrieve detailed JSON prediction logs for a completed video processing job. The logs contain comprehensive information about all detections, including bounding box coordinates, class labels, confidence scores, timestamps, and statistics.
+
+**Path Parameters**:
+- `job_id` (required): The job ID returned from `/upload`
+
+**Response**: 
+- Content-Type: `application/json`
+- Complete prediction log with metadata, statistics, and per-frame detections
+
+**Error Responses**:
+- `404`: Job not found or log file not available
+- `400`: Job not completed yet (status is not "completed")
+
+**Response Structure**:
+```json
+{
+  "metadata": {
+    "processing_timestamp": "2025-11-28T21:20:12.415675",
+    "completion_timestamp": "2025-11-28T21:23:22.185058",
+    "input_video": {
+      "path": "/path/to/input.mp4",
+      "filename": "input.mp4",
+      "resolution": {
+        "width": 3840,
+        "height": 2160
+      },
+      "fps": 29.97,
+      "total_frames": 453,
+      "duration_seconds": 15.12
+    },
+    "output_video": {
+      "path": "/path/to/output.mp4",
+      "filename": "output.mp4"
+    },
+    "model": {
+      "device": "mps",
+      "confidence_threshold": 0.5,
+      "checkpoint_path": "/path/to/checkpoint.pth",
+      "config_path": "/path/to/config.yml",
+      "pipeline_type": "saliency"
+    }
+  },
+  "statistics": {
+    "total_frames_processed": 453,
+    "total_detections": 8133,
+    "frames_with_detections": 453,
+    "average_detections_per_frame": 17.95,
+    "class_distribution": {
+      "car": 5959,
+      "bus": 280,
+      "person": 1829,
+      "truck": 62,
+      "motorcycle": 3
+    }
+  },
+  "predictions": [
+    {
+      "frame_number": 0,
+      "timestamp_seconds": 0.0,
+      "timestamp_formatted": "00:00.00",
+      "num_detections": 18,
+      "detections": [
+        {
+          "bbox": {
+            "x1": 2081.36,
+            "y1": 1708.63,
+            "x2": 2845.73,
+            "y2": 2159.42,
+            "format": "xyxy",
+            "width": 764.38,
+            "height": 450.79,
+            "area": 344573.37
+          },
+          "bbox_normalized": {
+            "x1": 0.54202,
+            "y1": 0.791031,
+            "x2": 0.741077,
+            "y2": 0.99973
+          },
+          "centroid": {
+            "x": 2463.55,
+            "y": 1934.02
+          },
+          "centroid_normalized": {
+            "x": 0.641549,
+            "y": 0.895381
+          },
+          "class": {
+            "id": 2,
+            "name": "car"
+          },
+          "confidence": 0.949279
+        }
+      ]
+    }
+  ]
+}
+```
+
+**Log File Location**:
+- Log files are saved in `backend/outputs/` directory
+- Filename format: `{job_id}_output_predictions.json`
+- Logs are automatically generated for every completed video processing job
+
+**Use Cases**:
+- Analysis of detection patterns across video frames
+- Performance evaluation and statistics
+- Debugging detection issues
+- Exporting detection data for further processing
+- Generating reports on detected objects
+
+**Example**:
+```bash
+curl http://localhost:8000/logs/550e8400-e29b-41d4-a716-446655440000
+```
+
+**Example with jq** (pretty print):
+```bash
+curl http://localhost:8000/logs/550e8400-e29b-41d4-a716-446655440000 | jq '.statistics'
+```
+
+---
+
+### 7. List All Jobs
 
 **Endpoint**: `GET /jobs`
 
@@ -489,8 +619,11 @@ curl http://localhost:8000/jobs
 
 3. **Processing completion**:
    - When status becomes "completed", frontend stops polling
+   - Backend automatically generates detailed JSON prediction logs
+   - Log file is saved as `{job_id}_output_predictions.json` in `backend/outputs/`
    - Frontend displays video preview using `GET /download/{job_id}` URL
    - User can download the processed video
+   - Prediction logs can be retrieved via `GET /logs/{job_id}` endpoint
 
 ---
 

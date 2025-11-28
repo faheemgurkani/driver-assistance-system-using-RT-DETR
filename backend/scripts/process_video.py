@@ -18,6 +18,7 @@ from PIL import Image, ImageDraw, ImageFont
 from pathlib import Path
 import json
 from typing import List, Dict, Optional, Callable
+from datetime import datetime
 
 # Add backend to path
 backend_path = Path(__file__).parent.parent
@@ -145,7 +146,8 @@ def ensure_h264_compat(output_path: str,
 def process_video(model: nn.Module, video_path: str, output_path: str,
                 device: str = 'cuda', conf_threshold: float = 0.5,
                 save_predictions: bool = True, output_format: str = 'both',
-                progress_callback: Optional[Callable[[int, int], None]] = None):
+                progress_callback: Optional[Callable[[int, int], None]] = None,
+                metadata: Optional[Dict] = None) -> Optional[str]:
     """
     Process video and save output with bounding boxes.
     
@@ -157,29 +159,35 @@ def process_video(model: nn.Module, video_path: str, output_path: str,
         conf_threshold: Confidence threshold
         save_predictions: Whether to save predictions as txt/json
         output_format: 'json', 'txt', or 'both'
+        metadata: Optional dictionary with additional metadata (checkpoint_path, config_path, pipeline_type, etc.)
+    
+    Returns:
+        Path to the generated log file (if save_predictions=True and output_format includes 'json'), None otherwise
     """
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
         raise ValueError(f"Failed to open video: {video_path}")
     
     # Get video properties
-    fps = int(cap.get(cv2.CAP_PROP_FPS))
+    fps = cap.get(cv2.CAP_PROP_FPS)
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    frame_duration = 1.0 / fps if fps > 0 else 0.0
     
     print(f"Processing video: {video_path}")
     print(f"  Resolution: {width}x{height}")
-    print(f"  FPS: {fps}")
+    print(f"  FPS: {fps:.2f}")
     print(f"  Total frames: {total_frames}")
     
     # Create video writer
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
     out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
     
-    # Store all predictions
+    # Store all predictions with enhanced metadata
     all_predictions = []
     frame_count = 0
+    processing_start_time = datetime.now().isoformat()
     
     while True:
         ret, frame = cap.read()
@@ -201,24 +209,68 @@ def process_video(model: nn.Module, video_path: str, output_path: str,
         annotated_bgr = cv2.cvtColor(annotated_array, cv2.COLOR_RGB2BGR)
         out.write(annotated_bgr)
         
-        # Store predictions
-        all_predictions.append({
+        # Calculate frame timestamp
+        frame_timestamp_seconds = frame_count * frame_duration
+        
+        # Store predictions with detailed information
+        frame_predictions = {
             'frame_number': frame_count,
+            'timestamp_seconds': round(frame_timestamp_seconds, 4),
+            'timestamp_formatted': f"{int(frame_timestamp_seconds // 60):02d}:{frame_timestamp_seconds % 60:05.2f}",
             'num_detections': results['num_detections'],
             'detections': []
-        })
+        }
         
         for bbox, label, score, centroid, class_name in zip(
             results['bboxes'], results['labels'], results['scores'],
             results['centroids'], results['class_names']
         ):
-            all_predictions[-1]['detections'].append({
-                'bbox': bbox,
-                'label': int(label),
-                'class_name': class_name,
-                'score': float(score),
-                'centroid': centroid
-            })
+            x1, y1, x2, y2 = bbox
+            bbox_width = x2 - x1
+            bbox_height = y2 - y1
+            bbox_area = bbox_width * bbox_height
+            
+            # Normalized coordinates (0-1 range)
+            x1_norm = x1 / width
+            y1_norm = y1 / height
+            x2_norm = x2 / width
+            y2_norm = y2 / height
+            
+            detection = {
+                'bbox': {
+                    'x1': round(float(x1), 2),
+                    'y1': round(float(y1), 2),
+                    'x2': round(float(x2), 2),
+                    'y2': round(float(y2), 2),
+                    'format': 'xyxy',
+                    'width': round(float(bbox_width), 2),
+                    'height': round(float(bbox_height), 2),
+                    'area': round(float(bbox_area), 2)
+                },
+                'bbox_normalized': {
+                    'x1': round(float(x1_norm), 6),
+                    'y1': round(float(y1_norm), 6),
+                    'x2': round(float(x2_norm), 6),
+                    'y2': round(float(y2_norm), 6)
+                },
+                'centroid': {
+                    'x': round(float(centroid[0]), 2),
+                    'y': round(float(centroid[1]), 2)
+                },
+                'centroid_normalized': {
+                    'x': round(float(centroid[0] / width), 6),
+                    'y': round(float(centroid[1] / height), 6)
+                },
+                'class': {
+                    'id': int(label),
+                    'name': class_name
+                },
+                'confidence': round(float(score), 6)
+            }
+            
+            frame_predictions['detections'].append(detection)
+        
+        all_predictions.append(frame_predictions)
         
         frame_count += 1
         
@@ -244,15 +296,63 @@ def process_video(model: nn.Module, video_path: str, output_path: str,
         
         if output_format in ['json', 'both']:
             json_path = output_dir / f"{base_path}_predictions.json"
+            
+            # Build comprehensive log structure
+            log_data = {
+                'metadata': {
+                    'processing_timestamp': processing_start_time,
+                    'completion_timestamp': datetime.now().isoformat(),
+                    'input_video': {
+                        'path': str(video_path),
+                        'filename': Path(video_path).name,
+                        'resolution': {
+                            'width': width,
+                            'height': height
+                        },
+                        'fps': round(float(fps), 2),
+                        'total_frames': frame_count,
+                        'duration_seconds': round(frame_count * frame_duration, 2)
+                    },
+                    'output_video': {
+                        'path': str(output_path),
+                        'filename': Path(output_path).name
+                    },
+                    'model': {
+                        'device': device,
+                        'confidence_threshold': conf_threshold
+                    }
+                },
+                'statistics': {
+                    'total_frames_processed': frame_count,
+                    'total_detections': sum(p['num_detections'] for p in all_predictions),
+                    'frames_with_detections': sum(1 for p in all_predictions if p['num_detections'] > 0),
+                    'average_detections_per_frame': round(
+                        sum(p['num_detections'] for p in all_predictions) / max(frame_count, 1), 2
+                    ),
+                    'class_distribution': {}
+                },
+                'predictions': all_predictions
+            }
+            
+            # Add metadata if provided
+            if metadata:
+                log_data['metadata']['model'].update({
+                    'checkpoint_path': metadata.get('checkpoint_path'),
+                    'config_path': metadata.get('config_path'),
+                    'pipeline_type': metadata.get('pipeline_type')
+                })
+            
+            # Calculate class distribution
+            class_counts = {}
+            for frame_pred in all_predictions:
+                for det in frame_pred['detections']:
+                    class_name = det['class']['name']
+                    class_counts[class_name] = class_counts.get(class_name, 0) + 1
+            log_data['statistics']['class_distribution'] = class_counts
+            
             with open(json_path, 'w') as f:
-                json.dump({
-                    'video_path': video_path,
-                    'total_frames': frame_count,
-                    'fps': fps,
-                    'resolution': [width, height],
-                    'predictions': all_predictions
-                }, f, indent=2)
-            print(f"✓ Saved JSON predictions to: {json_path}")
+                json.dump(log_data, f, indent=2)
+            print(f"✓ Saved detailed JSON predictions to: {json_path}")
         
         if output_format in ['txt', 'both']:
             txt_path = output_dir / f"{base_path}_predictions.txt"
@@ -263,16 +363,30 @@ def process_video(model: nn.Module, video_path: str, output_path: str,
                 f.write(f"Resolution: {width}x{height}\n\n")
                 
                 for frame_pred in all_predictions:
-                    f.write(f"Frame {frame_pred['frame_number']}:\n")
+                    f.write(f"Frame {frame_pred['frame_number']} (Time: {frame_pred.get('timestamp_formatted', 'N/A')}):\n")
                     f.write(f"  Detections: {frame_pred['num_detections']}\n")
                     for det in frame_pred['detections']:
-                        f.write(f"    - Class: {det['class_name']} (ID: {det['label']})\n")
-                        f.write(f"      Score: {det['score']:.4f}\n")
-                        f.write(f"      BBox: [{det['bbox'][0]:.2f}, {det['bbox'][1]:.2f}, "
-                               f"{det['bbox'][2]:.2f}, {det['bbox'][3]:.2f}]\n")
-                        f.write(f"      Centroid: [{det['centroid'][0]:.2f}, {det['centroid'][1]:.2f}]\n")
+                        bbox = det['bbox']
+                        centroid = det['centroid']
+                        class_info = det['class']
+                        f.write(f"    - Class: {class_info['name']} (ID: {class_info['id']})\n")
+                        f.write(f"      Confidence: {det['confidence']:.4f}\n")
+                        f.write(f"      BBox: [x1={bbox['x1']:.2f}, y1={bbox['y1']:.2f}, "
+                               f"x2={bbox['x2']:.2f}, y2={bbox['y2']:.2f}]\n")
+                        f.write(f"      BBox Size: {bbox['width']:.2f}x{bbox['height']:.2f} (Area: {bbox['area']:.2f})\n")
+                        f.write(f"      Centroid: [x={centroid['x']:.2f}, y={centroid['y']:.2f}]\n")
                     f.write("\n")
             print(f"✓ Saved TXT predictions to: {txt_path}")
+    
+    # Return log file path if JSON was saved
+    if save_predictions and output_format in ['json', 'both']:
+        base_path = Path(output_path).stem
+        output_dir = Path(output_path).parent
+        json_path = output_dir / f"{base_path}_predictions.json"
+        if json_path.exists():
+            return str(json_path)
+    
+    return None
 
 
 def main(args):

@@ -143,6 +143,7 @@ The FastAPI backend automatically mirrors the frontend pipeline selector:
 2. The backend searches `backend/output/` for the matching checkpoint directory (`d2city_rtdetr_*` vs `d2city_saliency_enhanced_*`) and falls back to `backend/checkpoints/`.
 3. The same field determines which YAML config is passed into `YAMLConfig` before establishing the model.
 4. During processing, `scripts/process_video.py` re-encodes every output to H.264 so both branches produce browser-friendly previews.
+5. **Prediction Logging**: For every completed video processing job, detailed JSON logs are automatically generated containing all detection results (bounding boxes, class labels, confidence scores, timestamps, and statistics). Logs are saved as `{job_id}_output_predictions.json` in `backend/outputs/` and can be retrieved via the `GET /logs/{job_id}` API endpoint.
 
-This guarantees that choosing “Saliency-Enhanced” in the UI always uses the saliency dataset class, the saliency-specific config (`d2city_saliency_enhanced_rtdetr_r101vd.yml`), and the fine-tuned weights saved in `backend/output/d2city_saliency_enhanced_rtdetr_r101vd/`.
+This guarantees that choosing "Saliency-Enhanced" in the UI always uses the saliency dataset class, the saliency-specific config (`d2city_saliency_enhanced_rtdetr_r101vd.yml`), and the fine-tuned weights saved in `backend/output/d2city_saliency_enhanced_rtdetr_r101vd/`.
 

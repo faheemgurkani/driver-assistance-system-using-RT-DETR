@@ -44,8 +44,10 @@ app.add_middleware(
 # Configuration
 UPLOAD_DIR = backend_path / "uploads"
 OUTPUT_DIR = backend_path / "outputs"
+LOGS_DIR = backend_path / "logs"
 UPLOAD_DIR.mkdir(exist_ok=True)
 OUTPUT_DIR.mkdir(exist_ok=True)
+LOGS_DIR.mkdir(exist_ok=True)
 
 # Global model cache
 _model_cache = {
@@ -101,6 +103,7 @@ class ProcessingStatus(BaseModel):
     progress: float
     message: str
     output_file: Optional[str] = None
+    log_file: Optional[str] = None
 
 
 def load_model_once(checkpoint_path: str, config_path: Optional[str] = None, pipeline_type: str = "original"):
@@ -194,22 +197,49 @@ def process_video_task(job_id: str, input_path: str, checkpoint_path: str, conf_
                 processing_jobs[job_id]["progress"] = 0.98
                 processing_jobs[job_id]["message"] = "Re-encoding complete. Finalizing output..."
 
+        # Prepare metadata for logging
+        metadata = {
+            'checkpoint_path': checkpoint_path,
+            'pipeline_type': pipeline_type
+        }
+        
+        # Try to get config path from model cache
+        if _model_cache.get("config") is not None:
+            # Config path might be stored in the config object or we can infer it
+            if pipeline_type == "saliency":
+                r101vd_config = backend_path / "configs" / "d2city_saliency_enhanced_rtdetr_r101vd.yml"
+                r50vd_config = backend_path / "configs" / "d2city_saliency_enhanced_rtdetr.yml"
+                if r101vd_config.exists():
+                    metadata['config_path'] = str(r101vd_config)
+                elif r50vd_config.exists():
+                    metadata['config_path'] = str(r50vd_config)
+            else:
+                default_config = backend_path / "configs" / "d2city_rtdetr.yml"
+                if default_config.exists():
+                    metadata['config_path'] = str(default_config)
+        
         # Process video (this handles everything)
-        process_video(
+        log_file_path = process_video(
             model=model,
             video_path=input_path,
             output_path=str(output_path),
             device=device,
             conf_threshold=conf_threshold,
-            save_predictions=False,  # Skip predictions for API
+            save_predictions=True,  # Enable prediction logging
             output_format='json',
-            progress_callback=handle_progress
+            progress_callback=handle_progress,
+            metadata=metadata
         )
         
         processing_jobs[job_id]["status"] = "completed"
         processing_jobs[job_id]["progress"] = 1.0
         processing_jobs[job_id]["message"] = "Processing completed"
         processing_jobs[job_id]["output_file"] = output_filename
+        
+        # Store log file name if available
+        if log_file_path:
+            log_file_path_obj = Path(log_file_path)
+            processing_jobs[job_id]["log_file"] = log_file_path_obj.name
         
     except Exception as e:
         import traceback
@@ -367,7 +397,8 @@ async def get_status(job_id: str):
         status=job["status"],
         progress=job["progress"],
         message=job["message"],
-        output_file=job.get("output_file")
+        output_file=job.get("output_file"),
+        log_file=job.get("log_file")
     )
 
 
@@ -420,6 +451,31 @@ async def list_jobs():
             for job_id, job in processing_jobs.items()
         ]
     }
+
+
+@app.get("/logs/{job_id}")
+async def get_logs(job_id: str):
+    """Get prediction logs for a completed job."""
+    if job_id not in processing_jobs:
+        raise HTTPException(status_code=404, detail="Job not found")
+    
+    job = processing_jobs[job_id]
+    if job["status"] != "completed":
+        raise HTTPException(status_code=400, detail="Job not completed yet")
+    
+    log_file = job.get("log_file")
+    if not log_file:
+        raise HTTPException(status_code=404, detail="Log file not found for this job")
+    
+    log_path = OUTPUT_DIR / log_file
+    if not log_path.exists():
+        raise HTTPException(status_code=404, detail="Log file not found on disk")
+    
+    import json
+    with open(log_path, 'r') as f:
+        log_data = json.load(f)
+    
+    return JSONResponse(content=log_data)
 
 
 if __name__ == "__main__":
