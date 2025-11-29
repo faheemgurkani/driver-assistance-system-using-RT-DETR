@@ -23,7 +23,7 @@ class DetSolver(BaseSolver):
         
         # Calculate number of parameters
         n_parameters = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
-        
+
         base_ds = get_coco_api_from_dataset(self.val_dataloader.dataset)
         # best_stat = {'coco_eval_bbox': 0, 'coco_eval_masks': 0, 'epoch': -1, }
         best_stat = {'epoch': -1, }

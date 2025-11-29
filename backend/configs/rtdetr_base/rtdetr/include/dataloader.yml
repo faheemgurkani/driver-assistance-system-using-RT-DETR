@@ -37,3 +37,4 @@ val_dataloader:
   batch_size: 8
   num_workers: 4
   collate_fn: default_collate_fn
+

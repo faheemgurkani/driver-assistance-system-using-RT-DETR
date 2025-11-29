@@ -6,9 +6,11 @@ Minimalistic, modern, dark-themed Next.js frontend for the Driver Assistance Sys
 
 - **Dark Theme**: Black and white minimalist design
 - **Video Upload**: Upload dashcam videos for processing
-- **Real-time Status**: Track processing progress
-- **Video Preview**: View processed videos with bounding boxes
-- **Download**: Download processed videos
+- **Pipeline Selection**: Choose between Original D2-City and Saliency-Enhanced pipelines
+- **Real-time Status**: Track processing progress with live updates
+- **System Logs**: Terminal-style log output showing processing progress and ADAS status
+- **Video Preview**: View processed videos with bounding boxes and ADAS alerts
+- **Download**: Download processed videos (properly formatted as .mp4)
 
 ## Setup
 
@@ -46,7 +48,8 @@ http://localhost:3000
 
 The frontend communicates with the FastAPI backend at `http://localhost:8000`:
 
-- `POST /upload` - Upload video
-- `GET /status/{job_id}` - Get processing status
-- `GET /download/{job_id}` - Download processed video
+- `POST /upload` - Upload video with pipeline type selection
+- `GET /status/{job_id}` - Get processing status (with automatic job recovery)
+- `GET /download/{job_id}` - Download processed video with proper Content-Disposition headers
+- `GET /logs/{job_id}` - Retrieve detailed prediction logs (JSON format)
 

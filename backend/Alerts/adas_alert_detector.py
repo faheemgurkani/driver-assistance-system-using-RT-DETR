@@ -23,14 +23,168 @@ from typing import Dict, List, Tuple, Optional
 import cv2
 import numpy as np
 
-# Import ADAS modules
-from modules.blind_spot import check_blind_spot, draw_blind_spot_zones, compute_centroid
-from modules.collision import (
-    compute_collision_risk,
-    draw_collision_risk,
-    estimate_distance,
-    in_lane as check_in_lane
-)
+# ============================================================================
+# ADAS Constants and Helper Functions
+# ============================================================================
+
+# Valid vehicle classes for ADAS detection
+VALID_CLASSES = ['car', 'truck', 'bus', 'motorcycle', 'bicycle', 'van']
+
+# Blind Spot Detection Constants
+MIN_CONFIDENCE = 0.3
+MIN_BBOX_HEIGHT = 20  # Minimum bounding box height in pixels
+
+# Collision Warning Constants
+MIN_SCORE = 0.3
+HIGH_RISK_DISTANCE = 30.0  # meters
+MEDIUM_RISK_DISTANCE = 50.0  # meters
+
+
+def compute_centroid(bbox) -> Tuple[float, float]:
+    """
+    Compute the centroid (center point) of a bounding box.
+    
+    Args:
+        bbox: Bounding box as dict with x1,y1,x2,y2 or list [x1,y1,x2,y2]
+    
+    Returns:
+        tuple: (cx, cy) centroid coordinates
+    """
+    if isinstance(bbox, dict):
+        if 'x1' in bbox and 'y1' in bbox:
+            x1, y1, x2, y2 = bbox['x1'], bbox['y1'], bbox['x2'], bbox['y2']
+        elif 'xtl' in bbox and 'ytl' in bbox:
+            x1, y1, x2, y2 = bbox['xtl'], bbox['ytl'], bbox['xbr'], bbox['ybr']
+        else:
+            raise ValueError(f"Invalid bbox dict format: {bbox}")
+    elif isinstance(bbox, (list, tuple)) and len(bbox) == 4:
+        x1, y1, x2, y2 = bbox
+    else:
+        raise ValueError(f"Invalid bbox format: {bbox}")
+    
+    cx = (x1 + x2) / 2.0
+    cy = (y1 + y2) / 2.0
+    return (cx, cy)
+
+
+def draw_blind_spot_zones(frame: np.ndarray) -> np.ndarray:
+    """
+    Draw blind spot detection zones on the frame.
+    
+    Args:
+        frame: OpenCV image (numpy array)
+    
+    Returns:
+        numpy.ndarray: Frame with blind spot zones drawn
+    """
+    h, w = frame.shape[:2]
+    
+    # Left blind spot zone (0-25% width, 60-100% height)
+    left_x_min = int(0.0 * w)
+    left_x_max = int(0.25 * w)
+    left_y_min = int(0.60 * h)
+    left_y_max = int(1.00 * h)
+    
+    # Right blind spot zone (75-100% width, 60-100% height)
+    right_x_min = int(0.75 * w)
+    right_x_max = int(1.00 * w)
+    right_y_min = int(0.60 * h)
+    right_y_max = int(1.00 * h)
+    
+    # Draw semi-transparent zones
+    overlay = frame.copy()
+    
+    # Left zone (yellow, semi-transparent)
+    cv2.rectangle(overlay, (left_x_min, left_y_min), (left_x_max, left_y_max), (0, 255, 255), -1)
+    cv2.addWeighted(overlay, 0.2, frame, 0.8, 0, frame)
+    
+    # Right zone (yellow, semi-transparent)
+    overlay = frame.copy()
+    cv2.rectangle(overlay, (right_x_min, right_y_min), (right_x_max, right_y_max), (0, 255, 255), -1)
+    cv2.addWeighted(overlay, 0.2, frame, 0.8, 0, frame)
+    
+    # Draw zone borders
+    cv2.rectangle(frame, (left_x_min, left_y_min), (left_x_max, left_y_max), (0, 255, 255), 2)
+    cv2.rectangle(frame, (right_x_min, right_y_min), (right_x_max, right_y_max), (0, 255, 255), 2)
+    
+    return frame
+
+
+def estimate_distance(bbox_height: float, k: float = 800.0) -> float:
+    """
+    Estimate distance to object based on bounding box height.
+    Uses the formula: distance = k / bbox_height
+    
+    Args:
+        bbox_height: Height of bounding box in pixels
+        k: Scaling constant (default: 800.0)
+    
+    Returns:
+        float: Estimated distance in meters
+    """
+    if bbox_height <= 0:
+        return float('inf')
+    return k / bbox_height
+
+
+def check_in_lane(centroid_x: float, frame_width: int) -> bool:
+    """
+    Check if an object's centroid is within the lane zone.
+    Lane zone is defined as 30-70% of frame width.
+    
+    Args:
+        centroid_x: X coordinate of object centroid
+        frame_width: Width of the frame
+    
+    Returns:
+        bool: True if object is in lane, False otherwise
+    """
+    lane_x_min = 0.30 * frame_width
+    lane_x_max = 0.70 * frame_width
+    return lane_x_min <= centroid_x <= lane_x_max
+
+
+def draw_collision_risk(frame: np.ndarray, collision_result: Dict) -> np.ndarray:
+    """
+    Draw collision risk indicator on the frame.
+    
+    Args:
+        frame: OpenCV image (numpy array)
+        collision_result: Dict with 'collision_risk', 'nearest_distance', 'object_bbox'
+    
+    Returns:
+        numpy.ndarray: Frame with collision risk indicator drawn
+    """
+    h, w = frame.shape[:2]
+    risk_level = collision_result.get('collision_risk', 'LOW')
+    distance = collision_result.get('nearest_distance')
+    obj_bbox = collision_result.get('object_bbox')
+    
+    # Determine color based on risk level
+    if risk_level == 'HIGH':
+        color = (0, 0, 255)  # Red
+        text = f"COLLISION RISK: HIGH"
+    elif risk_level == 'MEDIUM':
+        color = (0, 165, 255)  # Orange
+        text = f"COLLISION RISK: MEDIUM"
+    else:
+        color = (0, 255, 0)  # Green
+        text = f"COLLISION RISK: LOW"
+    
+    # Draw indicator in top-left corner
+    if distance is not None:
+        text = f"{text} ({distance:.1f}m)"
+    
+    # Background rectangle for text
+    text_size = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 1.5, 3)[0]
+    text_x = 10
+    text_y = 60
+    cv2.rectangle(frame, (text_x - 10, text_y - text_size[1] - 10),
+                 (text_x + text_size[0] + 10, text_y + 10), (0, 0, 0), -1)
+    cv2.putText(frame, text, (text_x, text_y),
+               cv2.FONT_HERSHEY_SIMPLEX, 1.5, color, 3)
+    
+    return frame
 
 
 def load_detections_from_json(json_path: str) -> List[Dict]:
@@ -135,8 +289,6 @@ def get_blind_spot_coordinates(detections: List[Dict], frame_width: int, frame_h
     Returns:
         dict: Detailed blind spot information with coordinates
     """
-    from modules.blind_spot import VALID_CLASSES, MIN_CONFIDENCE, MIN_BBOX_HEIGHT
-    
     left_objects = []
     right_objects = []
     
@@ -250,8 +402,6 @@ def get_collision_warning_details(detections: List[Dict], frame_width: int, fram
     Returns:
         dict: Detailed collision warning information with positions and reasons
     """
-    from modules.collision import VALID_CLASSES, MIN_SCORE, MIN_BBOX_HEIGHT, HIGH_RISK_DISTANCE, MEDIUM_RISK_DISTANCE
-    
     nearest_object = None
     nearest_distance = float('inf')
     all_valid_objects = []
@@ -391,65 +541,70 @@ def draw_all_alerts(frame: np.ndarray, blind_spot_info: Dict, collision_info: Di
         class_name = det.get('class') or det.get('label', 'unknown')
         confidence = det.get('confidence') or det.get('score', 0.0)
         
-        # Determine color
+        # Determine color (OpenCV uses BGR format)
         if class_name.lower() in ['car', 'bus', 'truck', 'van', 'motorcycle', 'bicycle']:
             color = (0, 255, 0)  # Green
+            text_color = (0, 0, 0)  # Black text on green background
+        elif class_name.lower() == 'person':
+            color = (255, 0, 0)  # Blue (BGR: (B, G, R))
+            text_color = (255, 255, 255)  # White text on blue background
         else:
-            color = (255, 0, 0)  # Red
+            color = (0, 0, 255)  # Red (BGR: (B, G, R))
+            text_color = (255, 255, 255)  # White text on red background
         
-        # Draw bounding box
-        cv2.rectangle(vis_frame, (x1, y1), (x2, y2), color, 2)
+        # Draw bounding box (increased thickness for better visibility)
+        cv2.rectangle(vis_frame, (x1, y1), (x2, y2), color, 3)
         
-        # Draw label
+        # Draw label with appropriate text color based on background
         label = f"{class_name} {confidence:.2f}"
-        label_size = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)[0]
-        cv2.rectangle(vis_frame, (x1, y1 - label_size[1] - 5),
+        label_size = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 1.5, 3)[0]
+        cv2.rectangle(vis_frame, (x1, y1 - label_size[1] - 10),
                      (x1 + label_size[0], y1), color, -1)
-        cv2.putText(vis_frame, label, (x1, y1 - 5),
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1)
+        cv2.putText(vis_frame, label, (x1, y1 - 10),
+                   cv2.FONT_HERSHEY_SIMPLEX, 1.5, text_color, 3)
     
     # Highlight blind spot objects with red boxes
     for obj in blind_spot_info.get('left_objects', []):
         x1, y1, x2, y2 = map(int, obj['bbox'])
-        cv2.rectangle(vis_frame, (x1, y1), (x2, y2), (0, 0, 255), 3)  # Red thick border
-        cv2.putText(vis_frame, f"BLIND SPOT LEFT", (x1, y1 - 10),
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+        cv2.rectangle(vis_frame, (x1, y1), (x2, y2), (0, 0, 255), 4)  # Red thick border
+        cv2.putText(vis_frame, f"BLIND SPOT LEFT", (x1, y1 - 15),
+                   cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 0, 255), 3)
     
     for obj in blind_spot_info.get('right_objects', []):
         x1, y1, x2, y2 = map(int, obj['bbox'])
-        cv2.rectangle(vis_frame, (x1, y1), (x2, y2), (0, 0, 255), 3)  # Red thick border
-        cv2.putText(vis_frame, f"BLIND SPOT RIGHT", (x1, y1 - 10),
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+        cv2.rectangle(vis_frame, (x1, y1), (x2, y2), (0, 0, 255), 4)  # Red thick border
+        cv2.putText(vis_frame, f"BLIND SPOT RIGHT", (x1, y1 - 15),
+                   cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 0, 255), 3)
     
     # Highlight collision risk object
     if collision_info.get('nearest_object'):
         obj = collision_info['nearest_object']
         x1, y1, x2, y2 = map(int, obj['bbox'])
-        cv2.rectangle(vis_frame, (x1, y1), (x2, y2), (0, 165, 255), 3)  # Orange thick border
+        cv2.rectangle(vis_frame, (x1, y1), (x2, y2), (0, 165, 255), 4)  # Orange thick border
         distance_text = f"COLLISION RISK: {obj['distance']:.1f}m"
-        cv2.putText(vis_frame, distance_text, (x1, y1 - 10),
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 165, 255), 2)
+        cv2.putText(vis_frame, distance_text, (x1, y1 - 15),
+                   cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 165, 255), 3)
     
     # Draw blind spot alert text
-    alert_y = 30
+    alert_y = 50
     if blind_spot_info['left_blind_spot']:
         alert_text = f"LEFT BLIND SPOT ALERT! ({blind_spot_info['objects_in_left']} objects)"
-        text_size = cv2.getTextSize(alert_text, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2)[0]
+        text_size = cv2.getTextSize(alert_text, cv2.FONT_HERSHEY_SIMPLEX, 1.8, 3)[0]
         text_x = (w - text_size[0]) // 2
-        cv2.rectangle(vis_frame, (text_x - 10, alert_y - 25),
-                     (text_x + text_size[0] + 10, alert_y + 5), (0, 0, 255), -1)
+        cv2.rectangle(vis_frame, (text_x - 15, alert_y - text_size[1] - 10),
+                     (text_x + text_size[0] + 15, alert_y + 10), (0, 0, 255), -1)
         cv2.putText(vis_frame, alert_text, (text_x, alert_y),
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-        alert_y += 40
+                   cv2.FONT_HERSHEY_SIMPLEX, 1.8, (255, 255, 255), 3)
+        alert_y += text_size[1] + 30
     
     if blind_spot_info['right_blind_spot']:
         alert_text = f"RIGHT BLIND SPOT ALERT! ({blind_spot_info['objects_in_right']} objects)"
-        text_size = cv2.getTextSize(alert_text, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2)[0]
+        text_size = cv2.getTextSize(alert_text, cv2.FONT_HERSHEY_SIMPLEX, 1.8, 3)[0]
         text_x = (w - text_size[0]) // 2
-        cv2.rectangle(vis_frame, (text_x - 10, alert_y - 25),
-                     (text_x + text_size[0] + 10, alert_y + 5), (0, 0, 255), -1)
+        cv2.rectangle(vis_frame, (text_x - 15, alert_y - text_size[1] - 10),
+                     (text_x + text_size[0] + 15, alert_y + 10), (0, 0, 255), -1)
         cv2.putText(vis_frame, alert_text, (text_x, alert_y),
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+                   cv2.FONT_HERSHEY_SIMPLEX, 1.8, (255, 255, 255), 3)
     
     return vis_frame
 

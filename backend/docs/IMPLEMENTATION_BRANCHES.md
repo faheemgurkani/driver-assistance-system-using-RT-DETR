@@ -46,10 +46,10 @@ train_dataloader:
 ```
 
 ### Characteristics
-- ✅ Extracts frames from videos on-the-fly
-- ✅ Applies basic preprocessing (BGR→RGB)
-- ✅ No annotations (empty target dicts)
-- ⚠️ Requires video decoding (slower)
+- Extracts frames from videos on-the-fly
+- Applies basic preprocessing (BGR→RGB)
+- No annotations (empty target dicts)
+- Requires video decoding (slower)
 
 ---
 
@@ -103,11 +103,11 @@ train_dataloader:
 ```
 
 ### Characteristics
-- ✅ Loads pre-processed frames directly (faster)
-- ✅ Supports annotations (for training)
-- ✅ No video decoding overhead
-- ✅ Saliency enhancement already applied
-- ✅ **Backbone**: Uses the ResNet-101-VD config (`d2city_saliency_enhanced_rtdetr_r101vd.yml`) aligned with our COCO checkpoint
+- Loads pre-processed frames directly (faster)
+- Supports annotations (for training)
+- No video decoding overhead
+- Saliency enhancement already applied
+- **Backbone**: Uses ResNet-101-VD config (`d2city_saliency_enhanced_rtdetr_r101vd.yml`) aligned with COCO checkpoint `rtdetr_r101vd_6x_coco.pth`
 
 ---
 
@@ -142,8 +142,9 @@ The FastAPI backend automatically mirrors the frontend pipeline selector:
 1. `/upload` accepts `pipeline_type` (`"original"` or `"saliency"`).
 2. The backend searches `backend/output/` for the matching checkpoint directory (`d2city_rtdetr_*` vs `d2city_saliency_enhanced_*`) and falls back to `backend/checkpoints/`.
 3. The same field determines which YAML config is passed into `YAMLConfig` before establishing the model.
-4. During processing, `scripts/process_video.py` re-encodes every output to H.264 so both branches produce browser-friendly previews.
-5. **Prediction Logging**: For every completed video processing job, detailed JSON logs are automatically generated containing all detection results (bounding boxes, class labels, confidence scores, timestamps, and statistics). Logs are saved as `{job_id}_output_predictions.json` in `backend/outputs/` and can be retrieved via the `GET /logs/{job_id}` API endpoint.
+4. During processing, `scripts/process_video.py` re-encodes every output to H.264/AAC so both branches produce browser-friendly previews.
+5. **ADAS Integration**: If available, ADAS alerts (blind spot detection and collision warning) are automatically processed per frame and overlaid on the video.
+6. **Prediction Logging**: For every completed video processing job, detailed JSON logs are automatically generated containing all detection results (bounding boxes, class labels, confidence scores, timestamps, ADAS alerts, and statistics). Logs are saved as `{job_id}_output_predictions.json` in `backend/logs/` and can be retrieved via the `GET /logs/{job_id}` API endpoint.
 
-This guarantees that choosing "Saliency-Enhanced" in the UI always uses the saliency dataset class, the saliency-specific config (`d2city_saliency_enhanced_rtdetr_r101vd.yml`), and the fine-tuned weights saved in `backend/output/d2city_saliency_enhanced_rtdetr_r101vd/`.
+This guarantees that choosing "Saliency-Enhanced" in the UI always uses the saliency dataset class, the saliency-specific config (`d2city_saliency_enhanced_rtdetr_r101vd.yml`), and the fine-tuned weights saved in `backend/output/d2city_saliency_enhanced_rtdetr_r101vd/` (ResNet-101-VD backbone).
 

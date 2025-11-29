@@ -94,7 +94,7 @@ cfg = YAMLConfig(
 
 ```
 RTDETR
-├── backbone (PResNet-50/101)
+├── backbone (PResNet-101-VD, primary production model)
 ├── encoder (HybridEncoder)
 │   ├── input_proj (conv layers)
 │   ├── encoder (TransformerEncoder layers)

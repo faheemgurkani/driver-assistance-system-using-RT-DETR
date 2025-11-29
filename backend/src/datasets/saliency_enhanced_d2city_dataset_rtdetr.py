@@ -51,10 +51,10 @@ try:
 except ImportError:
     # Fallback: try direct import if utils is not in path
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
-    try:
+try:
         from utils.d2city_annotation_parser import get_annotations_for_image
-    except ImportError:
-        get_annotations_for_image = None
+except ImportError:
+    get_annotations_for_image = None
 
 
 @register
@@ -213,16 +213,16 @@ class SaliencyEnhancedD2CityDatasetRTDETR(torch.utils.data.Dataset):
                     image_filename = os.path.basename(image_path)
             else:
                 # Fallback: extract from directory structure
-                image_dir = os.path.dirname(image_path)
-                video_id = os.path.basename(image_dir) if os.path.basename(image_dir) else os.path.basename(os.path.dirname(image_dir))
-                image_filename = os.path.basename(image_path)
+            image_dir = os.path.dirname(image_path)
+            video_id = os.path.basename(image_dir) if os.path.basename(image_dir) else os.path.basename(os.path.dirname(image_dir))
+            image_filename = os.path.basename(image_path)
             
             xml_path = os.path.join(self.annotations_dir, f"{video_id}.xml")
             
             # Check if XML file exists before trying to load
             if os.path.exists(xml_path):
                 try:
-                    boxes, labels = get_annotations_for_image(xml_path, image_filename, w, h)
+            boxes, labels = get_annotations_for_image(xml_path, image_filename, w, h)
                     # Validate boxes and labels have matching dimensions
                     if len(boxes) != len(labels):
                         # If mismatch, return empty annotations

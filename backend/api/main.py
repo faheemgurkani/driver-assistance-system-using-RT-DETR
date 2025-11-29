@@ -11,6 +11,7 @@ import asyncio
 from pathlib import Path
 from typing import Optional
 from datetime import datetime
+from urllib.parse import quote
 
 from fastapi import FastAPI, File, UploadFile, HTTPException, BackgroundTasks, Form, Request
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
@@ -83,11 +84,17 @@ def build_range_response(file_path: Path, range_header: str, attachment: bool, j
                 remaining -= len(data)
                 yield data
 
+    # Ensure proper filename with .mp4 extension in Content-Disposition header
+    filename = f"processed_{job_id}.mp4"
+    disposition_type = "attachment" if attachment else "inline"
+    # Use both filename (for compatibility) and filename* (RFC 5987 for UTF-8)
+    content_disposition = f'{disposition_type}; filename="{filename}"; filename*=UTF-8\'\'{quote(filename)}'
     headers = {
         "Content-Range": f"bytes {start}-{end}/{file_size}",
         "Accept-Ranges": "bytes",
         "Content-Length": str(chunk_size),
-        "Content-Disposition": f'{"attachment" if attachment else "inline"}; filename="processed_{job_id}.mp4"',
+        "Content-Disposition": content_disposition,
+        "Content-Type": "video/mp4",
     }
     return StreamingResponse(
         iter_file(),
@@ -184,6 +191,14 @@ def process_video_task(job_id: str, input_path: str, checkpoint_path: str, conf_
         from process_video import process_video
         
         def handle_progress(processed_frames: int, total_frames: int):
+            """
+            progress_callback from process_video:
+            - processed_frames >= 0: normal frame progress
+            - processed_frames == -1: re-encode start
+            - processed_frames == -2: re-encode complete
+            - processed_frames == -10: ADAS alerts enabled
+            - processed_frames == -11: ADAS alerts encountered an error and were disabled
+            """
             if processed_frames >= 0:
                 progress_ratio = processed_frames / max(total_frames, 1)
                 processing_jobs[job_id]["progress"] = min(0.2 + 0.75 * progress_ratio, 0.95)
@@ -196,6 +211,17 @@ def process_video_task(job_id: str, input_path: str, checkpoint_path: str, conf_
             elif processed_frames == -2:
                 processing_jobs[job_id]["progress"] = 0.98
                 processing_jobs[job_id]["message"] = "Re-encoding complete. Finalizing output..."
+            elif processed_frames == -10:
+                # ADAS alerts successfully initialized
+                processing_jobs[job_id]["message"] = (
+                    "ADAS: Mapping blind-spot and collision risks per frame..."
+                )
+            elif processed_frames == -11:
+                # ADAS alerts failed; pipeline has fallen back to base detections
+                processing_jobs[job_id]["message"] = (
+                    "ADAS alerts disabled for this run due to an internal error. "
+                    "Continuing with base detections only (see backend logs for details)."
+                )
 
         # Prepare metadata for logging
         metadata = {
@@ -228,7 +254,8 @@ def process_video_task(job_id: str, input_path: str, checkpoint_path: str, conf_
             save_predictions=True,  # Enable prediction logging
             output_format='json',
             progress_callback=handle_progress,
-            metadata=metadata
+            metadata=metadata,
+            logs_dir=str(LOGS_DIR)  # Save logs in dedicated logs directory
         )
         
         processing_jobs[job_id]["status"] = "completed"
@@ -315,19 +342,19 @@ async def upload_video(
             # Look for saliency-enhanced checkpoint (try R101VD first, then R50VD)
             saliency_dirs = [
                 output_dir / "d2city_saliency_enhanced_rtdetr_r101vd",
-                output_dir / "d2city_saliency_enhanced_rtdetr_r50vd"
+                output_dir / "d2city_saliency_enhanced_rtdetr_r50vd",
             ]
             for saliency_checkpoint_dir in saliency_dirs:
-                if saliency_checkpoint_dir.exists():
+            if saliency_checkpoint_dir.exists():
                     # Prefer checkpoint.pth or checkpoint0000.pth over eval/ files
                     checkpoints = list(saliency_checkpoint_dir.glob("checkpoint*.pth"))
                     if not checkpoints:
-                        checkpoints = list(saliency_checkpoint_dir.glob("*.pth"))
-                    if checkpoints:
+                checkpoints = list(saliency_checkpoint_dir.glob("*.pth"))
+                if checkpoints:
                         # Sort to prefer checkpoint.pth or checkpoint0000.pth
                         checkpoints.sort(key=lambda x: (x.name != "checkpoint.pth", x.name))
-                        checkpoint_path = str(checkpoints[0])
-                        print(f"Using saliency-enhanced checkpoint: {checkpoint_path}")
+                    checkpoint_path = str(checkpoints[0])
+                    print(f"Using saliency-enhanced checkpoint: {checkpoint_path}")
                         break
         
         if checkpoint_path is None:
@@ -385,13 +412,48 @@ async def upload_video(
     }
 
 
+def recover_job_status(job_id: str) -> Optional[dict]:
+    """
+    Recover job status from filesystem if job is not in memory.
+    This handles cases where the server reloaded but the job completed.
+    """
+    # Check if output video exists
+    output_filename = f"{job_id}_output.mp4"
+    output_path = OUTPUT_DIR / output_filename
+    
+    if output_path.exists():
+        # Job completed - reconstruct status
+        log_filename = f"{job_id}_output_predictions.json"
+        log_path = LOGS_DIR / log_filename
+        if not log_path.exists():
+            log_path = OUTPUT_DIR / log_filename
+        
+        return {
+            "status": "completed",
+            "progress": 1.0,
+            "message": "Processing completed",
+            "output_file": output_filename,
+            "log_file": log_filename if log_path.exists() else None
+        }
+    
+    return None
+
+
 @app.get("/status/{job_id}")
 async def get_status(job_id: str):
     """Get processing status for a job."""
     if job_id not in processing_jobs:
+        # Try to recover from filesystem (e.g., after server reload)
+        recovered = recover_job_status(job_id)
+        if recovered:
+            # Restore job to memory for future queries
+            processing_jobs[job_id] = recovered
+            job = recovered
+        else:
         raise HTTPException(status_code=404, detail="Job not found")
+    else:
+        job = processing_jobs[job_id]
     
-    job = processing_jobs[job_id]
     return ProcessingStatus(
         job_id=job_id,
         status=job["status"],
@@ -405,7 +467,12 @@ async def get_status(job_id: str):
 @app.get("/download/{job_id}")
 async def download_video(request: Request, job_id: str, attachment: bool = False):
     """Download processed video."""
+    # Check if job exists in memory or can be recovered
     if job_id not in processing_jobs:
+        recovered = recover_job_status(job_id)
+        if recovered:
+            processing_jobs[job_id] = recovered
+        else:
         raise HTTPException(status_code=404, detail="Job not found")
     
     job = processing_jobs[job_id]
@@ -414,7 +481,8 @@ async def download_video(request: Request, job_id: str, attachment: bool = False
     
     output_file = job.get("output_file")
     if not output_file:
-        raise HTTPException(status_code=404, detail="Output file not found")
+        # Fallback: try standard naming convention
+        output_file = f"{job_id}_output.mp4"
     
     file_path = OUTPUT_DIR / output_file
     if not file_path.exists():
@@ -427,10 +495,17 @@ async def download_video(request: Request, job_id: str, attachment: bool = False
             return range_response
 
     disposition_type = "attachment" if attachment else "inline"
-    headers = {"Accept-Ranges": "bytes"}
+    # Ensure proper filename with .mp4 extension in Content-Disposition header
+    filename = f"processed_{job_id}.mp4"
+    # Use both filename (for compatibility) and filename* (RFC 5987 for UTF-8)
+    content_disposition = f'{disposition_type}; filename="{filename}"; filename*=UTF-8\'\'{quote(filename)}'
+    headers = {
+        "Accept-Ranges": "bytes",
+        "Content-Disposition": content_disposition
+    }
     return FileResponse(
         path=str(file_path),
-        filename=f"processed_{job_id}.mp4",
+        filename=filename,
         media_type="video/mp4",
         content_disposition_type=disposition_type,
         headers=headers
@@ -456,8 +531,13 @@ async def list_jobs():
 @app.get("/logs/{job_id}")
 async def get_logs(job_id: str):
     """Get prediction logs for a completed job."""
+    # Check if job exists in memory or can be recovered
     if job_id not in processing_jobs:
-        raise HTTPException(status_code=404, detail="Job not found")
+        recovered = recover_job_status(job_id)
+        if recovered:
+            processing_jobs[job_id] = recovered
+        else:
+            raise HTTPException(status_code=404, detail="Job not found")
     
     job = processing_jobs[job_id]
     if job["status"] != "completed":
@@ -465,9 +545,13 @@ async def get_logs(job_id: str):
     
     log_file = job.get("log_file")
     if not log_file:
-        raise HTTPException(status_code=404, detail="Log file not found for this job")
+        # Fallback: try standard naming convention
+        log_file = f"{job_id}_output_predictions.json"
     
-    log_path = OUTPUT_DIR / log_file
+    # Check logs directory first, then fallback to outputs directory (for backward compatibility)
+    log_path = LOGS_DIR / log_file
+    if not log_path.exists():
+        log_path = OUTPUT_DIR / log_file
     if not log_path.exists():
         raise HTTPException(status_code=404, detail="Log file not found on disk")
     

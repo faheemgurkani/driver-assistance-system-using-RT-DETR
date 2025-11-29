@@ -2,7 +2,7 @@
 
 ## Overview
 
-Transfer learning fine-tunes a pretrained RT-DETR model (trained on COCO) on the D2-City dataset without modifying the model architecture. All runs use the **ResNet-101-VD COCO checkpoint (`rtdetr_r101vd_6x_coco.pth`)**; lighter backbones are only kept for historical reference.
+Transfer learning fine-tunes a pretrained RT-DETR model (trained on COCO) on the D2-City dataset without modifying the model architecture. All production runs use the **ResNet-101-VD COCO checkpoint (`rtdetr_r101vd_6x_coco.pth`)** as the backbone.
 
 ## Architecture Preservation
 
@@ -108,7 +108,7 @@ solver.fit()  # Starts fine-tuning
 - **Fine-tuning script**: `scripts/finetuning.py`
 - **Label mapping**: `src/utils/d2city_annotation_parser.py`
 - **Model loading**: `src/rtdetr/solver/solver.py` (`load_tuning_state`)
-- **Config**: `configs/d2city_saliency_enhanced_rtdetr_r101vd.yml`
+- **Config**: `configs/d2city_saliency_enhanced_rtdetr_r101vd.yml` (ResNet-101-VD backbone)
 
 ## Advantages of Label Mapping
 
@@ -119,8 +119,9 @@ solver.fit()  # Starts fine-tuning
 
 ## Summary
 
-- ✅ Architecture: **Unchanged** (80 COCO classes)
-- ✅ Strategy: **Label mapping** (D2-City → COCO classes)
-- ✅ Fine-tuning: **End-to-end** (all layers trainable)
-- ✅ Evaluation: **COCO format** (category IDs via remapping)
+- Architecture: **Unchanged** (80 COCO classes)
+- Strategy: **Label mapping** (D2-City → COCO classes)
+- Fine-tuning: **End-to-end** (all layers trainable)
+- Evaluation: **COCO format** (category IDs via remapping)
+- Backbone: **ResNet-101-VD** (primary production model)
 

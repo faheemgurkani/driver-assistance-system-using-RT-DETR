@@ -4,12 +4,19 @@ A comprehensive driver assistance system implementation using RT-DETR (Real-Time
 
 ## Features
 
-- **Dual Pipeline Support**: Original D2-City (video extraction) and Saliency-Enhanced (pre-processed frames)
-- **ResNet-101 Backbone**: All transfer-learning and inference paths default to the COCO-pretrained **RT-DETR R101VD** checkpoint (`rtdetr_r101vd_6x_coco.pth`)
-- **Complete RT-DETR Stack**: Standalone PyTorch implementation copied from RT-DETR for full control
-- **End-to-End Pipeline**: Training/fine-tuning scripts, FastAPI inference service, and Next.js frontend
-- **Inline Playback**: Backend re-encodes outputs to H.264/AAC and serves HTTP range responses for instant browser preview
-- **Mirrored Progress Logs**: Backend frame counts and re-encoding status show up inside the frontend terminal log
+- **Dual Pipeline Support**: Supports both Original D2-City dataset (with preprocessing) and Saliency-Enhanced dataset (pre-processed frames)
+- **D2-City Dataset Support**: Fine-tuned on D2-City video dataset using ResNet-101-VD backbone
+- **RT-DETR Integration**: Uses RT-DETR's native PyTorch model implementation and training infrastructure
+- **Complete Pipeline**: Training, fine-tuning, inference, and evaluation
+- **Model Establishment**: Properly establishes model architecture from config, then loads pretrained weights
+- **Web Interface**: Minimalistic dark-themed Next.js frontend with FastAPI backend
+- **Pipeline Selector**: Frontend dropdown to choose between Original and Saliency-Enhanced pipelines
+- **Video Processing**: Upload dashcam videos and get processed videos with bounding boxes
+- **ADAS Alerts**: Advanced Driver-Assistance Systems integration with blind spot detection and collision warning
+- **Enhanced Visualization**: Large, high-contrast text labels on bounding boxes (white text on colored backgrounds, black text on green)
+- **Automatic Re-encoding**: All processed videos are automatically re-encoded to H.264/AAC for browser compatibility
+- **Prediction Logging**: Detailed JSON logs with bounding boxes, class labels, confidence scores, timestamps, and statistics
+- **Job Recovery**: Automatic recovery of completed jobs after server reloads
 
 ## RT-DETR Model Implementation
 
@@ -17,7 +24,7 @@ The system includes a **standalone PyTorch-based RT-DETR model implementation** 
 
 - **Model Class**: `RTDETR` (PyTorch `nn.Module`) located in `backend/src/rtdetr/zoo/rtdetr/rtdetr.py`
 - **Architecture**:
-  - Backbone: ResNet/DLA/RegNet (configurable)
+  - Backbone: ResNet-101-VD (primary), ResNet/DLA/RegNet (configurable)
   - Encoder: HybridEncoder
   - Decoder: RTDETRTransformer
 - **Checkpoints**: Pretrained weights are loaded into the established architecture
@@ -39,7 +46,7 @@ driver-assistance-system-using-RT-DETR/
 │   ├── checkpoints/           # Pretrained model checkpoints
 │   ├── configs/               # Configuration files
 │   │   ├── d2city_rtdetr.yml  # Original D2-City config (with preprocessing)
-│   │   ├── d2city_saliency_enhanced_rtdetr.yml  # Saliency-enhanced config
+│   │   ├── d2city_saliency_enhanced_rtdetr_r101vd.yml  # Saliency-enhanced config (ResNet-101-VD)
 │   │   └── rtdetr_base/       # RT-DETR base configs
 │   ├── scripts/               # All scripts
 │   │   ├── finetuning.py     # Fine-tune on D2-City (PRIMARY)
@@ -56,7 +63,9 @@ driver-assistance-system-using-RT-DETR/
 │   │   └── utils/
 │   │       └── saliency_integration.py  # Saliency enhancement utilities
 │   ├── uploads/               # Uploaded videos
-│   └── outputs/               # Processed videos
+│   ├── outputs/               # Processed videos
+│   ├── logs/                  # Prediction logs (JSON)
+│   └── Alerts/                # ADAS alert detector module
 ├── frontend/                  # Next.js frontend
 │   ├── app/
 │   │   ├── page.tsx          # Main page component
@@ -64,8 +73,11 @@ driver-assistance-system-using-RT-DETR/
 │   │   └── globals.css       # Dark theme styles
 │   ├── package.json          # Node dependencies
 │   └── tsconfig.json         # TypeScript config
-├── start_backend.sh          # Backend startup script
-├── start_frontend.sh         # Frontend startup script
+├── scripts/                  # Startup scripts
+│   ├── start_backend.sh      # Backend startup script
+│   └── start_frontend.sh     # Frontend startup script
+├── docs/                     # Documentation
+│   └── FRONTEND_BACKEND_SETUP.md
 └── requirements.txt          # Python dependencies
 ```
 
@@ -75,8 +87,8 @@ driver-assistance-system-using-RT-DETR/
 
 - Python 3.8+
 - Node.js 18+ with npm
-- **RT-DETR R101VD checkpoint** (`rtdetr_r101vd_6x_coco.pth`) placed in `backend/checkpoints/`
-- CUDA (optional) or Apple Silicon (MPS) for acceleration
+- RT-DETR checkpoint in `backend/checkpoints/`
+- CUDA (optional, for GPU acceleration)
 
 ### 1. Install Python Dependencies
 
@@ -111,8 +123,9 @@ npm install
 
 ```bash
 bash scripts/start_backend.sh
-# or from backend/api
-# python run_server.py
+# or
+cd backend
+python api/run_server.py
 ```
 
 Backend will run at: `http://localhost:8000`
@@ -121,8 +134,9 @@ Backend will run at: `http://localhost:8000`
 
 ```bash
 bash scripts/start_frontend.sh
-# or (from frontend/)
-# npm run dev
+# or
+cd frontend
+npm run dev
 ```
 
 Frontend will run at: `http://localhost:3000`
@@ -134,41 +148,37 @@ Frontend will run at: `http://localhost:3000`
    - **Original D2-City**: Uses original dataset with data loading and preprocessing
    - **Saliency-Enhanced**: Uses pre-processed saliency-enhanced frames (no preprocessing)
 3. Upload a dashcam video
-4. Wait for processing
-5. View the processed video inline (FastAPI streams the MP4 with range support)
-6. Use the **Download Result** button to force a browser download (`attachment=1`)
-7. Monitor the terminal-style log to see frame progress and the final re-encoding status
-
-### Inline Preview & Download Flow
-
-- The backend always re-encodes processed videos to **H.264/AAC** with `faststart` so browsers can decode them.
-- `GET /download/{job_id}` supports HTTP range requests; the `<video>` tag loads metadata almost instantly and starts playing.
-- The same endpoint accepts `?attachment=1` to force a download—used by the frontend button.
+4. Wait for processing (ADAS alerts are automatically enabled if available)
+5. View processed video with bounding boxes and ADAS alerts
+6. Download processed video (automatically saved as .mp4)
+7. Access prediction logs via `/logs/{job_id}` endpoint
 
 ## Usage
 
 ### Fine-Tuning on D2-City
 
-> **Default setup**: All production runs use the **ResNet-101-VD COCO checkpoint** with the saliency-enhanced dataset (`configs/d2city_saliency_enhanced_rtdetr_r101vd.yml`). The legacy ResNet-50 config is kept only for backwards compatibility.
-
-#### Recommended: Saliency-Enhanced Dataset (ResNet-101)
+#### Scenario 1: Original D2-City Dataset (with preprocessing)
 
 ```bash
-# Register dataset (one-time)
+# Register dataset first
 python -c "import sys; sys.path.insert(0, 'backend/src/datasets'); from register_rtdetr import *"
 
+# Fine-tune on original D2-City dataset
 python backend/scripts/finetuning.py \
-    --config backend/configs/d2city_saliency_enhanced_rtdetr_r101vd.yml \
+    --config backend/configs/d2city_rtdetr_r101vd.yml \
     --pretrained-checkpoint backend/checkpoints/rtdetr_r101vd_6x_coco.pth \
     --amp
 ```
 
-#### Legacy: Original D2-City Videos (ResNet-50 config)
+#### Scenario 2: Saliency-Enhanced D2-City Dataset (pre-processed frames)
 
 ```bash
-# Only needed if you want to re-run the legacy pipeline
+# Register dataset first
+python -c "import sys; sys.path.insert(0, 'backend/src/datasets'); from register_rtdetr import *"
+
+# Fine-tune on saliency-enhanced dataset
 python backend/scripts/finetuning.py \
-    --config backend/configs/d2city_rtdetr.yml \
+    --config backend/configs/d2city_saliency_enhanced_rtdetr_r101vd.yml \
     --pretrained-checkpoint backend/checkpoints/rtdetr_r101vd_6x_coco.pth \
     --amp
 ```
@@ -178,12 +188,12 @@ python backend/scripts/finetuning.py \
 ```bash
 # Original D2-City
 python backend/scripts/train.py \
-    --config backend/configs/d2city_rtdetr.yml \
+    --config backend/configs/d2city_rtdetr_r101vd.yml \
     --tuning backend/checkpoints/rtdetr_r101vd_6x_coco.pth
 
-# Saliency-Enhanced (using flag)
+# Saliency-Enhanced
 python backend/scripts/train.py \
-    --saliency-enhanced \
+    --config backend/configs/d2city_saliency_enhanced_rtdetr_r101vd.yml \
     --tuning backend/checkpoints/rtdetr_r101vd_6x_coco.pth
 ```
 
@@ -192,20 +202,20 @@ python backend/scripts/train.py \
 ```bash
 # Original D2-City
 python backend/scripts/test.py \
-    --config backend/configs/d2city_rtdetr.yml \
-    --resume backend/output/d2city_rtdetr_r50vd/checkpoint.pth
+    --config backend/configs/d2city_rtdetr_r101vd.yml \
+    --resume backend/output/d2city_rtdetr_r101vd/checkpoint.pth
 
-# Saliency-Enhanced (using flag)
+# Saliency-Enhanced
 python backend/scripts/test.py \
-    --saliency-enhanced \
-    --resume backend/output/d2city_saliency_enhanced_rtdetr_r50vd/checkpoint.pth
+    --config backend/configs/d2city_saliency_enhanced_rtdetr_r101vd.yml \
+    --resume backend/output/d2city_saliency_enhanced_rtdetr_r101vd/checkpoint.pth
 ```
 
 ### Inference on Images
 
 ```bash
 python backend/scripts/inference.py \
-    --checkpoint backend/output/d2city_rtdetr_r50vd/checkpoint.pth \
+    --checkpoint backend/output/d2city_rtdetr_r101vd/checkpoint.pth \
     --input image.jpg \
     --output results.json
 ```
@@ -214,7 +224,7 @@ python backend/scripts/inference.py \
 
 ```bash
 python backend/scripts/process_video.py \
-    --checkpoint backend/output/d2city_rtdetr_r50vd/checkpoint.pth \
+    --checkpoint backend/output/d2city_rtdetr_r101vd/checkpoint.pth \
     --input video.mp4 \
     --output output.mp4 \
     --save-predictions
@@ -249,7 +259,7 @@ Upload video for processing.
 
 #### `GET /status/{job_id}`
 
-Get processing status.
+Get processing status. Automatically recovers completed jobs from filesystem if not in memory.
 
 **Response:**
 
@@ -259,23 +269,38 @@ Get processing status.
   "status": "processing",
   "progress": 0.5,
   "message": "Processing video...",
-  "output_file": "uuid_output.mp4"
+  "output_file": "uuid_output.mp4",
+  "log_file": "uuid_output_predictions.json"
 }
 ```
+
+**Response Fields:**
+- `job_id`: Unique job identifier
+- `status`: Current status ("pending", "processing", "completed", "error")
+- `progress`: Progress value (0.0 to 1.0)
+- `message`: Human-readable status message
+- `output_file`: Filename of processed video (when completed)
+- `log_file`: Filename of prediction log JSON (when completed)
+
+#### `GET /logs/{job_id}`
+
+Get detailed prediction logs for a completed job.
+
+**Returns:** JSON file containing all detection results with bounding boxes, class labels, confidence scores, timestamps, and statistics
 
 #### `GET /download/{job_id}`
 
 Download processed video.
 
 **Query Parameters:**
+- `attachment` (optional): If `true`, forces download; if `false` or omitted, inline preview
 
-- `attachment` (optional, default `false`): when `true`, forces `"Content-Disposition: attachment"` so the browser downloads the file immediately.
+**Returns:** Video file (MP4) with proper Content-Disposition header
 
-**Behavior:**
-
-- Supports HTTP `Range` headers (partial content) for inline playback and scrubbing.
-- Always returns an H.264 MP4 so modern browsers can decode it without plugins.
-- `Accept-Ranges: bytes` is set on full responses; partial requests return `206`.
+**Features:**
+- HTTP Range request support for video streaming
+- Automatic H.264/AAC re-encoding for browser compatibility
+- Proper filename with .mp4 extension
 
 #### `GET /health`
 
@@ -296,10 +321,11 @@ Health check with model status.
 - **Minimalistic Dark Theme**: Pure black (#000000) and white (#ffffff) color scheme
 - **Pipeline Selector**: Dropdown to choose between Original D2-City and Saliency-Enhanced pipelines
 - **Video Upload**: Drag & drop or click to select
-- **Real-time Progress**: Status updates with progress bar and terminal-style logs
-- **Video Preview**: Embedded video player with bounding boxes
-- **Download**: Direct download link for processed videos
-- **Documentation Tab**: Dynamic README rendering with markdown support (updates automatically)
+- **Real-time Progress**: Status updates with progress bar and terminal-style system logs
+- **Video Preview**: Embedded video player with bounding boxes and ADAS alerts
+- **Download**: Direct download link for processed videos (properly formatted as .mp4)
+- **System Logs**: Real-time terminal-style log output showing processing progress and ADAS status
+- **Documentation Tab**: Dynamic README rendering with markdown support
 - **Error Handling**: User-friendly error messages
 - **Tab Navigation**: Switch between Inference and Documentation views
 
@@ -386,19 +412,19 @@ All scripts support both pipeline scenarios (Original D2-City and Saliency-Enhan
 
 The model architecture is established from RT-DETR config files:
 
-- **Backbone**: ResNet/DLA/RegNet (defined in config)
+- **Backbone**: ResNet-101-VD (primary production model)
 - **Encoder**: Hybrid Encoder
 - **Decoder**: Transformer Decoder
 
-Pretrained weights are loaded into this architecture for fine-tuning.
+Pretrained weights from COCO (`rtdetr_r101vd_6x_coco.pth`) are loaded into this architecture for fine-tuning.
 
 ## Outputs
 
 - **Checkpoints**:
-  - Original pipeline: `backend/output/d2city_rtdetr_r50vd/`
-  - Saliency-enhanced pipeline: `backend/output/d2city_saliency_enhanced_rtdetr_r50vd/`
-- **Videos**: Annotated videos with bounding boxes (saved in `backend/outputs/`)
-- **Predictions**: JSON/TXT files with detections (bbox, class, score, centroid)
+  - Original pipeline: `backend/output/d2city_rtdetr_r101vd/`
+  - Saliency-enhanced pipeline: `backend/output/d2city_saliency_enhanced_rtdetr_r101vd/`
+- **Videos**: Annotated videos with bounding boxes and ADAS alerts (saved in `backend/outputs/`)
+- **Predictions**: Detailed JSON logs with detections (bbox, class, score, centroid, timestamps, statistics) saved in `backend/logs/`
 
 ## Technical Details
 
@@ -406,9 +432,11 @@ Pretrained weights are loaded into this architecture for fine-tuning.
 
 - **Framework**: FastAPI
 - **Processing**: Background tasks with asyncio
-- **Model**: RT-DETR PyTorch implementation (cached after first load)
-- **Video**: OpenCV for processing
-- **Storage**: Local file system
+- **Model**: RT-DETR PyTorch implementation with ResNet-101-VD backbone (cached after first load)
+- **Video**: OpenCV for processing, FFmpeg for H.264 re-encoding
+- **ADAS Integration**: Blind spot detection and collision warning per frame
+- **Storage**: Local file system (uploads, outputs, logs directories)
+- **Job Recovery**: Automatic recovery of completed jobs from filesystem after server reloads
 
 ### Frontend
 
@@ -469,19 +497,21 @@ The system supports two distinct pipeline scenarios:
 
 ### Scenario 1: Original D2-City Dataset
 
-- **Data Loading**: ✅ Loads MP4 videos, extracts frames
-- **Preprocessing**: ✅ Built-in (BGR→RGB, resize, normalization)
+- **Data Loading**: Loads MP4 videos, extracts frames
+- **Preprocessing**: Built-in (BGR→RGB, resize, normalization)
 - **Dataset**: `D2CityDatasetRTDETR`
-- **Config**: `d2city_rtdetr.yml`
-- **Checkpoint**: `backend/output/d2city_rtdetr_r50vd/checkpoint.pth`
+- **Config**: `d2city_rtdetr_r101vd.yml`
+- **Checkpoint**: `backend/output/d2city_rtdetr_r101vd/checkpoint.pth`
+- **Backbone**: ResNet-101-VD
 
 ### Scenario 2: Saliency-Enhanced D2-City Dataset
 
-- **Data Loading**: ✅ Loads pre-processed image files
-- **Preprocessing**: ❌ Not needed (already done)
+- **Data Loading**: Loads pre-processed image files
+- **Preprocessing**: Not needed (already done)
 - **Dataset**: `SaliencyEnhancedD2CityDatasetRTDETR`
-- **Config**: `d2city_saliency_enhanced_rtdetr.yml`
-- **Checkpoint**: `backend/output/d2city_saliency_enhanced_rtdetr_r50vd/checkpoint.pth`
+- **Config**: `d2city_saliency_enhanced_rtdetr_r101vd.yml`
+- **Checkpoint**: `backend/output/d2city_saliency_enhanced_rtdetr_r101vd/checkpoint.pth`
+- **Backbone**: ResNet-101-VD
 
 Both scenarios are fully supported in training, inference, and web interface.
 
@@ -492,15 +522,41 @@ Both scenarios are fully supported in training, inference, and web interface.
 3. **Optimize**: Add video compression, caching, CDN
 4. **Enhance**: Add batch processing, user accounts, history
 
+## ADAS Alerts
+
+The system includes Advanced Driver-Assistance Systems (ADAS) integration:
+
+- **Blind Spot Detection**: Monitors left and right blind spot zones (0-25% and 75-100% width, 60-100% height)
+- **Collision Warning**: Estimates distance to vehicles in the frontal lane and provides risk assessment (HIGH/MEDIUM/LOW)
+- **Visual Overlays**: Red boxes for blind spot alerts, orange boxes for collision risks, alert banners at top of frame
+- **Automatic Integration**: ADAS alerts are automatically enabled during video processing if available
+- **Error Handling**: Graceful fallback to standard detections if ADAS processing fails
+- **Logging**: ADAS alert information is included in prediction logs
+
+## Video Processing Features
+
+- **Automatic Re-encoding**: All processed videos are automatically re-encoded to H.264/AAC with `faststart` flag for browser compatibility
+- **HTTP Range Support**: Video streaming supports partial content requests for instant playback
+- **Enhanced Text Rendering**: Large, high-contrast text labels on bounding boxes
+  - Green boxes (vehicles): Black text
+  - Blue boxes (persons): White text
+  - Red boxes (other classes): White text
+- **Prediction Logging**: Detailed JSON logs automatically generated for every completed job
+  - Location: `backend/logs/{job_id}_output_predictions.json`
+  - Contains: Bounding boxes, class labels, confidence scores, timestamps, centroids, statistics
+  - Accessible via: `GET /logs/{job_id}` endpoint
+
 ## Notes
 
 - Backend processes videos in background (non-blocking)
 - Model is cached per pipeline type (faster subsequent requests)
 - Frontend polls status every 2 seconds
+- Job recovery: Completed jobs are automatically recovered from filesystem after server reloads
 - Videos are stored locally (consider cloud storage for production)
 - CORS is configured for localhost:3000
 - Pipeline selector in frontend automatically selects appropriate checkpoint and config
 - Both pipelines can be trained independently and used via web interface
+- All production runs use ResNet-101-VD backbone with COCO pretrained weights
 
 ## License
 

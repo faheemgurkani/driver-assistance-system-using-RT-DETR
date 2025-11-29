@@ -19,6 +19,7 @@ from pathlib import Path
 import json
 from typing import List, Dict, Optional, Callable
 from datetime import datetime
+import traceback
 
 # Add backend to path
 backend_path = Path(__file__).parent.parent
@@ -30,6 +31,23 @@ from src.rtdetr.data.coco.coco_dataset import mscoco_label2category, mscoco_cate
 # Import inference functions
 sys.path.insert(0, str(Path(__file__).parent))
 from inference import load_model, detect_frame, calculate_centroid
+
+# ADAS Alerts integration (optional)
+ADAS_AVAILABLE = False
+try:
+    alerts_path = backend_path / "Alerts"
+    sys.path.insert(0, str(alerts_path))
+    # We import only the functions we need; they will internally use the ADAS modules
+    from adas_alert_detector import (
+        get_blind_spot_coordinates,
+        get_collision_warning_details,
+        draw_all_alerts,
+    )
+    ADAS_AVAILABLE = True
+    print("ADAS Alerts: enabled (adas_alert_detector loaded)")
+except Exception as e:  # noqa: BLE001
+    # Fallback quietly if ADAS modules are not available
+    print(f"ADAS Alerts: disabled ({e})")
 
 
 def draw_detections(image: Image.Image, results: Dict, conf_threshold: float = 0.5) -> Image.Image:
@@ -46,9 +64,10 @@ def draw_detections(image: Image.Image, results: Dict, conf_threshold: float = 0
     """
     draw = ImageDraw.Draw(image)
     
-    # Try to load font
+    # Try to load font (increased size for better visibility)
     try:
-        font_size = max(20, int(image.size[0] / 30))
+        # Increase font size: divide by 15 for larger text, and ensure minimum of 50
+        font_size = max(50, int(image.size[0] / 15))
         try:
             font = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", font_size)
         except:
@@ -68,8 +87,8 @@ def draw_detections(image: Image.Image, results: Dict, conf_threshold: float = 0
         
         x1, y1, x2, y2 = bbox
         
-        # Draw bounding box
-        draw.rectangle([x1, y1, x2, y2], outline='blue', width=4)
+        # Draw bounding box (increased width for better visibility)
+        draw.rectangle([x1, y1, x2, y2], outline='blue', width=6)
         
         # Prepare text
         text = f"{class_name} {score:.2f}"
@@ -80,21 +99,21 @@ def draw_detections(image: Image.Image, results: Dict, conf_threshold: float = 0
             text_width = bbox_text[2] - bbox_text[0]
             text_height = bbox_text[3] - bbox_text[1]
         except AttributeError:
-            text_width = len(text) * 8
-            text_height = 20
+            text_width = len(text) * 12  # Increased for larger font
+            text_height = 30  # Increased for larger font
             bbox_text = [x1, y1, x1 + text_width, y1 + text_height]
         
-        # Draw text background
-        padding = 4
+        # Draw text background (increased padding for better visibility)
+        padding = 10
         draw.rectangle(
             [x1 - padding, y1 - padding, x1 + text_width + padding, y1 + text_height + padding],
-            fill='white',
+            fill='blue',
             outline='blue',
             width=2
         )
         
-        # Draw text
-        draw.text((x1, y1), text, font=font, fill='blue')
+        # Draw text in white for better visibility on blue background
+        draw.text((x1, y1), text, font=font, fill='white')
     
     return image
 
@@ -147,7 +166,7 @@ def process_video(model: nn.Module, video_path: str, output_path: str,
                 device: str = 'cuda', conf_threshold: float = 0.5,
                 save_predictions: bool = True, output_format: str = 'both',
                 progress_callback: Optional[Callable[[int, int], None]] = None,
-                metadata: Optional[Dict] = None) -> Optional[str]:
+                metadata: Optional[Dict] = None, logs_dir: Optional[str] = None) -> Optional[str]:
     """
     Process video and save output with bounding boxes.
     
@@ -160,6 +179,7 @@ def process_video(model: nn.Module, video_path: str, output_path: str,
         save_predictions: Whether to save predictions as txt/json
         output_format: 'json', 'txt', or 'both'
         metadata: Optional dictionary with additional metadata (checkpoint_path, config_path, pipeline_type, etc.)
+        logs_dir: Optional directory to save log files (defaults to same directory as output_path)
     
     Returns:
         Path to the generated log file (if save_predictions=True and output_format includes 'json'), None otherwise
@@ -189,24 +209,78 @@ def process_video(model: nn.Module, video_path: str, output_path: str,
     frame_count = 0
     processing_start_time = datetime.now().isoformat()
     
+    # Notify progress callback that ADAS alerts are enabled (if available)
+    if ADAS_AVAILABLE and progress_callback is not None:
+        # Special code -10 indicates ADAS mapping has been turned on
+        progress_callback(-10, -10)
+    
     while True:
         ret, frame = cap.read()
         if not ret:
             break
         
-        # Convert BGR to RGB
+        # Convert BGR to RGB for RT-DETR preprocessing
         frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         frame_pil = Image.fromarray(frame_rgb)
         
-        # Run detection
+        # Run detection (RT-DETR)
         results = detect_frame(model, frame_pil, device, conf_threshold)
         
-        # Draw detections
-        annotated_frame = draw_detections(frame_pil, results, conf_threshold)
+        # Prepare ADAS-compatible detections (if ADAS is available)
+        adas_detections: List[Dict] = []
+        if ADAS_AVAILABLE and results["num_detections"] > 0:
+            for bbox, label, score, centroid, class_name in zip(
+                results["bboxes"],
+                results["labels"],
+                results["scores"],
+                results["centroids"],
+                results["class_names"],
+            ):
+                x1, y1, x2, y2 = bbox
+                adas_detections.append(
+                    {
+                        "class": class_name,
+                        "confidence": float(score),
+                        "score": float(score),
+                        "bbox": [float(x1), float(y1), float(x2), float(y2)],
+                    }
+                )
         
-        # Convert back to BGR for video writer
+        # Default: no ADAS alerts
+        blind_spot_info: Optional[Dict] = None
+        collision_info: Optional[Dict] = None
+        
+        # Compute ADAS alerts and draw them if possible
+        annotated_bgr = None
+        if ADAS_AVAILABLE and adas_detections:
+            try:
+                blind_spot_info = get_blind_spot_coordinates(
+                    adas_detections, width, height
+                )
+                collision_info = get_collision_warning_details(
+                    adas_detections, width, height
+                )
+                # Draw full ADAS visualization on the original BGR frame
+                annotated_bgr = draw_all_alerts(
+                    frame, blind_spot_info, collision_info, adas_detections
+                )
+            except Exception as e:  # noqa: BLE001
+                # Fall back to plain detections if ADAS fails for any reason
+                print(f"ADAS Alerts error on frame {frame_count}: {e}")
+                traceback.print_exc()
+                # Inform frontend/system log that ADAS has failed for this run
+                if progress_callback is not None:
+                    # Special code -11 indicates an ADAS error
+                    progress_callback(-11, -11)
+                annotated_bgr = None  # Force fallback to standard detections
+        
+        # If ADAS didn't produce annotated_bgr, use standard RT-DETR bounding boxes
+        if annotated_bgr is None:
+            annotated_frame = draw_detections(frame_pil, results, conf_threshold)
         annotated_array = np.array(annotated_frame)
         annotated_bgr = cv2.cvtColor(annotated_array, cv2.COLOR_RGB2BGR)
+        
+        # Write annotated frame to video
         out.write(annotated_bgr)
         
         # Calculate frame timestamp
@@ -267,8 +341,14 @@ def process_video(model: nn.Module, video_path: str, output_path: str,
                 },
                 'confidence': round(float(score), 6)
             }
-            
             frame_predictions['detections'].append(detection)
+        
+        # Attach ADAS alerts (if available) to this frame's log entry
+        if blind_spot_info is not None or collision_info is not None:
+            frame_predictions["adas"] = {
+                "blind_spot": blind_spot_info,
+                "collision": collision_info,
+            }
         
         all_predictions.append(frame_predictions)
         
@@ -292,10 +372,15 @@ def process_video(model: nn.Module, video_path: str, output_path: str,
     # Save predictions
     if save_predictions:
         base_path = Path(output_path).stem
-        output_dir = Path(output_path).parent
+        # Use logs_dir if provided, otherwise save in same directory as output video
+        if logs_dir:
+            log_dir = Path(logs_dir)
+            log_dir.mkdir(exist_ok=True)
+        else:
+            log_dir = Path(output_path).parent
         
         if output_format in ['json', 'both']:
-            json_path = output_dir / f"{base_path}_predictions.json"
+            json_path = log_dir / f"{base_path}_predictions.json"
             
             # Build comprehensive log structure
             log_data = {
@@ -355,7 +440,7 @@ def process_video(model: nn.Module, video_path: str, output_path: str,
             print(f"✓ Saved detailed JSON predictions to: {json_path}")
         
         if output_format in ['txt', 'both']:
-            txt_path = output_dir / f"{base_path}_predictions.txt"
+            txt_path = log_dir / f"{base_path}_predictions.txt"
             with open(txt_path, 'w') as f:
                 f.write(f"Video: {video_path}\n")
                 f.write(f"Total Frames: {frame_count}\n")
@@ -381,8 +466,12 @@ def process_video(model: nn.Module, video_path: str, output_path: str,
     # Return log file path if JSON was saved
     if save_predictions and output_format in ['json', 'both']:
         base_path = Path(output_path).stem
-        output_dir = Path(output_path).parent
-        json_path = output_dir / f"{base_path}_predictions.json"
+        # Use logs_dir if provided, otherwise use same directory as output video
+        if logs_dir:
+            log_dir = Path(logs_dir)
+        else:
+            log_dir = Path(output_path).parent
+        json_path = log_dir / f"{base_path}_predictions.json"
         if json_path.exists():
             return str(json_path)
     

@@ -10,7 +10,7 @@ from pathlib import Path
 # Add backend/src to path for absolute imports
 backend_src_path = Path(__file__).parent.parent
 if str(backend_src_path) not in sys.path:
-    sys.path.insert(0, str(backend_src_path))
+sys.path.insert(0, str(backend_src_path))
 
 # Add RT-DETR to path (local copy)
 rtdetr_path = backend_src_path / "rtdetr"
@@ -23,8 +23,8 @@ try:
     from .d2city_dataset_rtdetr import D2CityDatasetRTDETR
 except Exception:
     # Fallback to absolute import
-    try:
-        from src.datasets.d2city_dataset_rtdetr import D2CityDatasetRTDETR
+try:
+    from src.datasets.d2city_dataset_rtdetr import D2CityDatasetRTDETR
     except Exception:
         D2CityDatasetRTDETR = None
 
@@ -32,8 +32,8 @@ try:
     from .saliency_enhanced_d2city_dataset_rtdetr import SaliencyEnhancedD2CityDatasetRTDETR
 except Exception:
     # Fallback to absolute import
-    try:
-        from src.datasets.saliency_enhanced_d2city_dataset_rtdetr import SaliencyEnhancedD2CityDatasetRTDETR
+try:
+    from src.datasets.saliency_enhanced_d2city_dataset_rtdetr import SaliencyEnhancedD2CityDatasetRTDETR
     except Exception:
         SaliencyEnhancedD2CityDatasetRTDETR = None
 

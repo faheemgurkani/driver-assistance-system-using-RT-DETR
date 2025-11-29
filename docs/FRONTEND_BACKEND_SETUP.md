@@ -56,7 +56,7 @@ The Driver Assistance System consists of two main components:
 - Python 3.8+
 - PyTorch (CUDA or MPS, depending on hardware)
 - All backend dependencies from `backend/requirements.txt`
-- **COCO pretrained RT-DETR R101VD checkpoint** (`backend/checkpoints/rtdetr_r101vd_6x_coco.pth`)
+- **COCO pretrained RT-DETR ResNet-101-VD checkpoint** (`backend/checkpoints/rtdetr_r101vd_6x_coco.pth`)
 
 ### Installation Steps
 
@@ -109,6 +109,7 @@ The backend will be available at:
 The backend uses the following default paths:
 - **Upload Directory**: `backend/uploads/` (created automatically)
 - **Output Directory**: `backend/outputs/` (created automatically)
+- **Logs Directory**: `backend/logs/` (created automatically)
 - **Model Checkpoints**: 
   - `backend/checkpoints/` (pretrained models)
   - `backend/output/` (fine-tuned models)
@@ -119,10 +120,13 @@ The backend uses the following default paths:
 - **Background Processing**: Video processing runs asynchronously using FastAPI BackgroundTasks
 - **Job Management**: Each video upload gets a unique job ID for tracking
 - **Pipeline Support**: Supports both "original" and "saliency-enhanced" processing pipelines
-- **Inline Preview Pipeline**: Processed MP4s are re-encoded to H.264/AAC with `faststart` for guaranteed browser playback
+- **ADAS Alerts**: Blind spot detection and collision warning integration with visual overlays
+- **Automatic Re-encoding**: Processed MP4s are re-encoded to H.264/AAC with `faststart` for guaranteed browser playback
 - **HTTP Range Streaming**: `/download/{job_id}` honors `Range` headers so previews can begin before the file finishes downloading
-- **Progress Mirroring**: Frame counts and re-encoding status are written to the job object and surface in the frontend System Log
-- **Automatic Prediction Logging**: Detailed JSON logs are automatically generated for every completed video processing job, containing all detection results with bounding boxes, class labels, confidence scores, timestamps, and statistics
+- **Progress Mirroring**: Frame counts, re-encoding status, and ADAS status are written to the job object and surface in the frontend System Log
+- **Automatic Prediction Logging**: Detailed JSON logs are automatically generated for every completed video processing job, containing all detection results with bounding boxes, class labels, confidence scores, timestamps, ADAS alerts, and statistics
+- **Job Recovery**: Automatic recovery of completed jobs from filesystem after server reloads
+- **Enhanced Text Rendering**: Large, high-contrast text labels (black on green boxes, white on colored boxes)
 
 ---
 
@@ -182,19 +186,20 @@ The frontend will be available at:
 - **Video Upload**: Drag-and-drop or click to upload
 - **Pipeline Selection**: Choose between "original" and "saliency-enhanced" pipelines
 - **Real-time Status**: Progress tracking with live updates
-- **System Logs**: Terminal-style log output
-- **Video Preview**: In-browser video player for processed results
-- **Download**: Direct download of processed videos
+- **System Logs**: Terminal-style log output showing processing progress and ADAS status
+- **Video Preview**: In-browser video player for processed results with bounding boxes and ADAS alerts
+- **Download**: Direct download of processed videos (properly formatted as .mp4)
 - **Documentation Tab**: Built-in documentation viewer
 
 ### Video Preview & Download Flow
 
 1. **Upload & Polling** – the frontend posts to `/upload` and polls `/status/{job_id}` every two seconds.
-2. **Frame Progress** – messages such as “Processing frames… 300/453” stream into the System Log.
-3. **Re-encoding Stage** – after inference finishes, the backend re-encodes the MP4 to H.264/AAC and updates the status to “Re-encoding video for browser preview…”.
-4. **Streaming Preview** – the `<video>` element requests `/download/{job_id}?preview=1&ts=...` and receives `206 Partial Content` plus `Accept-Ranges: bytes`, enabling instant playback and scrubbing.
-5. **Download Result** – the button calls `/download/{job_id}?attachment=1&ts=...` via a programmatic link so browsers always treat it as an attachment.
-6. **Cache Busting** – both URLs include the job ID timestamp to ensure the browser loads the newest file.
+2. **ADAS Initialization** – if ADAS is available, status message shows "ADAS: Mapping blind-spot and collision risks per frame..."
+3. **Frame Progress** – messages such as "Processing frames… 300/453" stream into the System Log.
+4. **Re-encoding Stage** – after inference finishes, the backend re-encodes the MP4 to H.264/AAC and updates the status to "Re-encoding video for browser preview…".
+5. **Streaming Preview** – the `<video>` element requests `/download/{job_id}` and receives `206 Partial Content` plus `Accept-Ranges: bytes`, enabling instant playback and scrubbing.
+6. **Download Result** – the button calls `/download/{job_id}?attachment=1&ts=...` via a programmatic link with proper Content-Disposition header ensuring .mp4 extension.
+7. **Cache Busting** – URLs include timestamps to ensure the browser loads the newest file.
 
 If the preview ever stalls at 0:00, open DevTools → Network → select the video request and confirm:
 - Status is `200` or `206`
@@ -328,8 +333,8 @@ print(response.json())
 
 **Checkpoint Selection**:
 If `checkpoint_path` is not provided, the backend will:
-1. For "saliency" pipeline: Look for checkpoint in `backend/output/d2city_saliency_enhanced_rtdetr_r50vd/`
-2. For "original" pipeline: Look for checkpoint in `backend/output/d2city_rtdetr_r50vd/`
+1. For "saliency" pipeline: Look for checkpoint in `backend/output/d2city_saliency_enhanced_rtdetr_r101vd/` (preferred) or `d2city_saliency_enhanced_rtdetr_r50vd/`
+2. For "original" pipeline: Look for checkpoint in `backend/output/d2city_rtdetr_r101vd/` (preferred) or `d2city_rtdetr_r50vd/`
 3. Fallback: Use any `.pth` file from `backend/checkpoints/`
 
 ---
@@ -358,9 +363,12 @@ If `checkpoint_path` is not provided, the backend will:
 - `job_id`: The job identifier
 - `status`: Current status - "pending", "processing", "completed", or "error"
 - `progress`: Progress value (0.0 to 1.0)
-- `message`: Human-readable status message
+- `message`: Human-readable status message (includes ADAS status when applicable)
 - `output_file`: Filename of the processed video (only when status is "completed")
 - `log_file`: Filename of the prediction log JSON file (only when status is "completed")
+
+**Job Recovery**:
+If a job is not found in memory (e.g., after server reload), the endpoint automatically attempts to recover it from the filesystem by checking if the output video exists. If found, the job status is restored as "completed".
 
 **Status Values**:
 - `"pending"`: Job is queued, waiting to start
@@ -387,9 +395,14 @@ The frontend polls this endpoint every 2 seconds while status is "pending" or "p
 **Path Parameters**:
 - `job_id` (required): The job ID returned from `/upload`
 
+**Query Parameters**:
+- `attachment` (optional): If `true`, forces download; if `false` or omitted, inline preview
+
 **Response**: 
 - Content-Type: `video/mp4`
-- File download with filename: `processed_{job_id}.mp4`
+- Content-Disposition: Properly formatted with filename `processed_{job_id}.mp4` and UTF-8 encoding
+- Accept-Ranges: `bytes` (supports HTTP Range requests)
+- File download with correct .mp4 extension
 
 **Error Responses**:
 - `404`: Job not found
@@ -514,16 +527,18 @@ curl "http://localhost:8000/download/550e8400-e29b-41d4-a716-446655440000" \
 ```
 
 **Log File Location**:
-- Log files are saved in `backend/outputs/` directory
+- Log files are saved in `backend/logs/` directory
 - Filename format: `{job_id}_output_predictions.json`
 - Logs are automatically generated for every completed video processing job
+- Logs include ADAS alert information (blind spot and collision warnings) per frame
 
 **Use Cases**:
 - Analysis of detection patterns across video frames
+- ADAS alert analysis and statistics
 - Performance evaluation and statistics
 - Debugging detection issues
 - Exporting detection data for further processing
-- Generating reports on detected objects
+- Generating reports on detected objects and safety alerts
 
 **Example**:
 ```bash
@@ -619,10 +634,11 @@ curl http://localhost:8000/jobs
 
 3. **Processing completion**:
    - When status becomes "completed", frontend stops polling
-   - Backend automatically generates detailed JSON prediction logs
-   - Log file is saved as `{job_id}_output_predictions.json` in `backend/outputs/`
-   - Frontend displays video preview using `GET /download/{job_id}` URL
-   - User can download the processed video
+   - Backend automatically generates detailed JSON prediction logs with ADAS alert information
+   - Log file is saved as `{job_id}_output_predictions.json` in `backend/logs/`
+   - Video is automatically re-encoded to H.264/AAC for browser compatibility
+   - Frontend displays video preview using `GET /download/{job_id}` URL with HTTP Range support
+   - User can download the processed video (properly formatted as .mp4)
    - Prediction logs can be retrieved via `GET /logs/{job_id}` endpoint
 
 ---

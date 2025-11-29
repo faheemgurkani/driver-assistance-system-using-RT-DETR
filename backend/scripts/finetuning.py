@@ -42,9 +42,9 @@ with warnings.catch_warnings():
     import src.rtdetr.data  # This imports and registers data transforms and loaders
     import src.rtdetr.optim  # This imports and registers optimizers and EMA
     import src.rtdetr.zoo  # This imports and registers all RT-DETR model classes (RTDETR, HybridEncoder, etc.)
-    import src.rtdetr.misc.dist as dist
-    from src.rtdetr.core import YAMLConfig
-    from src.rtdetr.solver import TASKS
+import src.rtdetr.misc.dist as dist
+from src.rtdetr.core import YAMLConfig
+from src.rtdetr.solver import TASKS
 
 
 def main(args):
@@ -106,12 +106,12 @@ def main(args):
     # Load config and create solver (suppress warnings)
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        cfg = YAMLConfig(
-            config_path,
-            tuning=pretrained_path,  # Use tuning flag for fine-tuning
-            use_amp=args.amp,
-        )
-        solver = TASKS[cfg.yaml_cfg['task']](cfg)
+    cfg = YAMLConfig(
+        config_path,
+        tuning=pretrained_path,  # Use tuning flag for fine-tuning
+        use_amp=args.amp,
+    )
+    solver = TASKS[cfg.yaml_cfg['task']](cfg)
     
     if args.test_only:
         # Validation only
