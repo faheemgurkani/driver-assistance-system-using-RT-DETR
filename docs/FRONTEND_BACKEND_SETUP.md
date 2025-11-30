@@ -128,6 +128,24 @@ The backend uses the following default paths:
 - **Job Recovery**: Automatic recovery of completed jobs from filesystem after server reloads
 - **Enhanced Text Rendering**: Large, high-contrast text labels (black on green boxes, white on colored boxes)
 
+### ADAS Modules
+
+The ADAS functionality is implemented as modular components in `backend/Alerts/modules/`:
+
+- **Blind Spot Detection** (`blind_spot/blind_spot.py`): Detects vehicles in left (0-25% width) and right (75-100% width) blind spot zones at 60-100% frame height
+- **Collision Warning** (`collision/collision_warning.py`): Estimates distance to vehicles in frontal lane (30-70% width) and classifies collision risk as HIGH/MEDIUM/LOW
+
+These modules are automatically imported during video processing. If unavailable, the system gracefully falls back to standard detections.
+
+### Notebooks
+
+Jupyter notebooks for dataset preparation are located in `backend/src/notebooks/`:
+
+- **`preprocessing_training_data.ipynb`**: Processes raw training videos and XML annotations from D2-City dataset
+- **`saliency_module.ipynb`**: Generates saliency masks and creates saliency-enhanced frames using Salience-DETR model
+
+These notebooks are used during dataset preparation before training the saliency-enhanced pipeline.
+
 ---
 
 ## Frontend Setup

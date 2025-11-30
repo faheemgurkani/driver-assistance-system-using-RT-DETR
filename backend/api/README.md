@@ -31,6 +31,15 @@ http://localhost:8000
 - **Prediction Logging**: Detailed JSON logs with ADAS alert information
 - **HTTP Range Support**: Video streaming with partial content requests
 
+## ADAS Modules
+
+The backend uses modular ADAS components located in `backend/Alerts/modules/`:
+
+- **Blind Spot Detection** (`blind_spot/blind_spot.py`): Detects vehicles in left/right blind spot zones
+- **Collision Warning** (`collision/collision_warning.py`): Estimates frontal collision risk based on distance heuristics
+
+These modules are automatically imported and used during video processing. If ADAS modules are unavailable, the system gracefully falls back to standard object detection without alerts.
+
 ## API Endpoints
 
 ### `GET /`

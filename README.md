@@ -60,12 +60,20 @@ driver-assistance-system-using-RT-DETR/
 │   │   │   ├── saliency_enhanced_d2city_dataset_rtdetr.py  # Saliency-enhanced loader
 │   │   │   └── register_rtdetr.py  # Register datasets with RT-DETR
 │   │   ├── rtdetr/            # RT-DETR model implementation (standalone)
+│   │   ├── notebooks/         # Jupyter notebooks for data preprocessing and saliency generation
+│   │   │   ├── preprocessing_training_data.ipynb  # Preprocess training videos and annotations
+│   │   │   └── saliency_module.ipynb  # Generate saliency masks and enhanced frames
 │   │   └── utils/
 │   │       └── saliency_integration.py  # Saliency enhancement utilities
 │   ├── uploads/               # Uploaded videos
 │   ├── outputs/               # Processed videos
 │   ├── logs/                  # Prediction logs (JSON)
 │   └── Alerts/                # ADAS alert detector module
+│       └── modules/           # ADAS detection modules
+│           ├── blind_spot/    # Blind spot detection module
+│           │   └── blind_spot.py  # Detects vehicles in left/right blind spot zones
+│           └── collision/     # Collision warning module
+│               └── collision_warning.py  # Estimates frontal collision risk
 ├── frontend/                  # Next.js frontend
 │   ├── app/
 │   │   ├── page.tsx          # Main page component
@@ -275,6 +283,7 @@ Get processing status. Automatically recovers completed jobs from filesystem if 
 ```
 
 **Response Fields:**
+
 - `job_id`: Unique job identifier
 - `status`: Current status ("pending", "processing", "completed", "error")
 - `progress`: Progress value (0.0 to 1.0)
@@ -293,11 +302,13 @@ Get detailed prediction logs for a completed job.
 Download processed video.
 
 **Query Parameters:**
+
 - `attachment` (optional): If `true`, forces download; if `false` or omitted, inline preview
 
 **Returns:** Video file (MP4) with proper Content-Disposition header
 
 **Features:**
+
 - HTTP Range request support for video streaming
 - Automatic H.264/AAC re-encoding for browser compatibility
 - Proper filename with .mp4 extension
@@ -533,6 +544,54 @@ The system includes Advanced Driver-Assistance Systems (ADAS) integration:
 - **Error Handling**: Graceful fallback to standard detections if ADAS processing fails
 - **Logging**: ADAS alert information is included in prediction logs
 
+### ADAS Modules
+
+The ADAS functionality is implemented as modular components in `backend/Alerts/modules/`:
+
+#### Blind Spot Detection Module (`blind_spot/`)
+
+**Location**: `backend/Alerts/modules/blind_spot/blind_spot.py`
+
+**Features**:
+
+- Detects vehicles in left blind spot zone (0-25% width, 60-100% height)
+- Detects vehicles in right blind spot zone (75-100% width, 60-100% height)
+- Filters detections by vehicle class (car, bus, truck, van, motorcycle, bicycle)
+- Applies confidence and bounding box size thresholds
+- Returns detection status and object counts per zone
+
+**Key Functions**:
+
+- `check_blind_spot(detections, frame_width, frame_height)`: Main detection function
+- `in_left_blind_spot(cx, cy, W, H)`: Checks if centroid is in left zone
+- `in_right_blind_spot(cx, cy, W, H)`: Checks if centroid is in right zone
+- `compute_centroid(bbox)`: Calculates bounding box centroid
+- `draw_blind_spot_zones(frame)`: Visualizes blind spot zones on frame
+
+#### Collision Warning Module (`collision/`)
+
+**Location**: `backend/Alerts/modules/collision/collision_warning.py`
+
+**Features**:
+
+- Estimates distance to nearest vehicle in frontal lane using bounding box height heuristic
+- Filters vehicles by lane position (30-70% frame width)
+- Classifies collision risk as HIGH/MEDIUM/LOW based on estimated distance
+- Applies vehicle class, confidence, and bounding box size filters
+
+**Key Functions**:
+
+- `compute_collision_risk(detections, frame_width, frame_height, k)`: Main risk assessment function
+- `estimate_distance(bbox_height, k)`: Estimates distance using `distance ≈ k / bbox_height`
+- `in_lane(cx, frame_width)`: Checks if vehicle is in frontal lane zone
+- `draw_collision_risk(frame, collision_info)`: Draws risk banner on frame
+
+**Risk Thresholds**:
+
+- HIGH: Distance ≤ 15 meters
+- MEDIUM: Distance ≤ 25 meters
+- LOW: Distance > 25 meters or no vehicles detected
+
 ## Video Processing Features
 
 - **Automatic Re-encoding**: All processed videos are automatically re-encoded to H.264/AAC with `faststart` flag for browser compatibility
@@ -546,6 +605,67 @@ The system includes Advanced Driver-Assistance Systems (ADAS) integration:
   - Contains: Bounding boxes, class labels, confidence scores, timestamps, centroids, statistics
   - Accessible via: `GET /logs/{job_id}` endpoint
 
+## Notebooks
+
+The project includes Jupyter notebooks in `backend/src/notebooks/` for data preprocessing and saliency generation:
+
+### Preprocessing Training Data (`preprocessing_training_data.ipynb`)
+
+**Purpose**: Processes raw training videos and annotation files from the D2-City dataset.
+
+**Features**:
+
+- Compatible with both Kaggle and local environments
+- Extracts frames from video files
+- Processes XML annotation files
+- Organizes data for training pipeline
+- Handles dataset directory structure
+
+**Usage**:
+
+- Run in Kaggle environment with `/kaggle/input` directory structure
+- Or run locally with `training_data/` directory structure
+- Processes videos and annotations to prepare dataset for training
+
+### Saliency Module (`saliency_module.ipynb`)
+
+**Purpose**: Generates saliency masks and creates saliency-enhanced frames for the saliency-enhanced pipeline.
+
+**Features**:
+
+- Uses Salience-DETR model for saliency mask generation
+- Processes video frames to extract saliency information
+- Creates enhanced frames by combining original frames with saliency masks
+- Batch processing with configurable batch size
+- Supports visualization of saliency masks and enhanced frames
+
+**Key Components**:
+
+- **SaliencyModel**: Loads and runs Salience-DETR model for mask generation
+- **AnnotationParser**: Parses XML annotations to identify frames requiring processing
+- **Frame Processing**: Extracts frames, generates masks, and creates enhanced frames
+- **Output**: Saves enhanced frames to `enhanced_frames/` directory structure
+
+**Configuration**:
+
+- Configurable batch size for GPU processing
+- Adjustable device selection (CUDA/CPU)
+- Configurable input/output directories
+- Visualization options for debugging
+
+**Output Structure**:
+
+```
+enhanced_frames/
+  video_id_1/
+    frame_00001.jpg  (saliency-enhanced)
+    frame_00002.jpg
+  video_id_2/
+    frame_00001.jpg
+```
+
+These notebooks are used during dataset preparation before training the saliency-enhanced pipeline.
+
 ## Notes
 
 - Backend processes videos in background (non-blocking)
@@ -557,6 +677,8 @@ The system includes Advanced Driver-Assistance Systems (ADAS) integration:
 - Pipeline selector in frontend automatically selects appropriate checkpoint and config
 - Both pipelines can be trained independently and used via web interface
 - All production runs use ResNet-101-VD backbone with COCO pretrained weights
+- ADAS modules are automatically imported and used during video processing if available
+- Notebooks are provided for dataset preprocessing and saliency generation workflows
 
 ## License
 
